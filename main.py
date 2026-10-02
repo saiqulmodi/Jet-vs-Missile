@@ -1525,11 +1525,12 @@ async def main():
                     ln["reload_cd"] = random.randint(360, 600)
                     campaign_enemies.append(launch_missile(current_level, li, 45))
 
-            if len(campaign_enemies) == 0 and not pending:
-                handle_round_conclusion("P1", "CAMPAIGN")
-
+            # a downed jet always loses the round, even when the missile that got it was the
+            # wave's last one (checking "wave cleared" first used to count that as a win)
             if p1_hp <= 0:
                 start_jet_crash("CAMPAIGN")
+            elif len(campaign_enemies) == 0 and not pending:
+                handle_round_conclusion("P1", "CAMPAIGN")
 
         # ======================================================================
         # 2-PLAYER DUEL LOGIC
