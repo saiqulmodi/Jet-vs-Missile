@@ -78,7 +78,6 @@ class RetroSoundEngine:
 
     def __init__(self):
         self.snd_shoot = self.create_tone(880, 240, 0.08, "square", volume=0.25)
-        self.snd_v_shoot = self.create_tone(320, 680, 0.09, "sine", volume=0.3)
         self.snd_laser = self.create_tone(950, 1200, 0.05, "sine", volume=0.15)
         self.snd_hit = self.create_tone(1100, 350, 0.06, "sine", volume=0.3)
         self.snd_explode = self.create_tone(160, 40, 0.35, "noise", volume=0.45)
@@ -100,7 +99,6 @@ SFX = RetroSoundEngine()
 OVERDRIVE_MUTATORS = [
     ("LOW GRAVITY ZONE", "Floats high in air; laser recoil kicks backward!"),
     ("BLACKOUT FOG", "Pitch black arena! Only neon glows reveal targets!"),
-    ("BULLET HELL SURGE", "Missiles fire 3-way scatter plasma bursts!"),
     ("HYPER SPEED STORM", "1.5x arena movement & rapid weapon discharge!")
 ]
 
@@ -211,33 +209,6 @@ def active_tactics(level: int):
     return [name for lvl, name in AI_TACTICS if level >= lvl]
 
 
-# ONBOARD ARSENAL: extra ammunition a missile fires by itself when the jet is inside
-# that weapon's range band (distance in pixels from missile to jet). The plasma bolt (the
-# original shot) is fired separately and always. Each type has its own reload (frames), so
-# there are always gaps to dodge through, and the shield blocks every type.
-AMMO_TYPES = {
-    "scatter": {"from_tier": 2, "min_range": 0,   "max_range": 200,  "cooldown": 150},  # close: 3-shot fan
-    "flak":    {"from_tier": 3, "min_range": 180, "max_range": 420,  "cooldown": 200},  # mid: bursts near the jet
-    "homing":  {"from_tier": 4, "min_range": 300, "max_range": 9999, "cooldown": 260},  # far: curving micro-missile
-}
-
-
-def make_ammo(kind, x, y, angle, dist, is_boss, power=1.0, pace=1.0):
-    boost = (1.5 if is_boss else 1.0) * power
-    v = pace   # shot speed follows the level pace
-    if kind == "scatter":
-        return [{"x": x, "y": y, "vx": math.cos(angle + s) * 6.5 * v, "vy": math.sin(angle + s) * 6.5 * v,
-                 "color": (255, 200, 40), "radius": 5, "dmg": int(8 * boost)} for s in (-0.3, 0.0, 0.3)]
-    if kind == "flak":
-        # fuse set to burst just short of the jet, so the fragment ring is what has to be dodged
-        return [{"x": x, "y": y, "vx": math.cos(angle) * 6.0 * v, "vy": math.sin(angle) * 6.0 * v, "kind": "flak",
-                 "fuse": max(10, int((dist - 60) / (6.0 * v))), "color": (255, 120, 40), "radius": 7, "dmg": int(10 * boost)}]
-    if kind == "homing":
-        return [{"x": x, "y": y, "vx": math.cos(angle) * 4.2 * v, "vy": math.sin(angle) * 4.2 * v, "kind": "homing",
-                 "life": 180, "turn": 0.045, "color": (255, 80, 200), "radius": 5, "dmg": int(15 * boost)}]
-    return []
-
-
 MISSILE_BODY_W, MISSILE_H = 36, 40   # missile body: half the original 72px length (user request 2026-10-02)
 FLAME_LEN_FACTOR = 2.0               # fire tail = twice the missile body's length
 
@@ -333,10 +304,10 @@ def create_missile_sprite(is_boss: bool = False, flash_white: bool = False, alph
 # ==============================================================================
 class MissileEnemy:
     """A homing missile. It turns toward its target at a limited rate (its range
-    tier sets speed and turn rate), hits the jet on contact, overshoots and loops back.
+    tier sets speed and turn rate) and blows itself up when it gets close to the jet
+    (proximity fuse, handled in the game loop).
     The old burrow holes are now radar-cloak points: the missile vanishes from radar there
-    and reappears at another one. Boss missiles (and every missile under the BULLET HELL
-    SURGE mutator) also release warheads."""
+    and reappears at another one. Missiles never fire: they hit or blow up next to the jet."""
 
     def __init__(self, level: int, is_boss: bool = False, mutator: str = "NONE",
                  launch_x: float = None, ground_y: int = 600, launch_delay: int = 0):
@@ -400,16 +371,7 @@ class MissileEnemy:
         self.burrow_cooldown = random.randint(180, 360)
         self.seek_timer = 0
 
-        rate_bonus = 15 if mutator == "BULLET HELL SURGE" else 0
-        self.cooldown_max = max(14, (40 if is_boss else 52) - int(level * 0.3) - rate_bonus)
-        self.shoot_timer = random.randint(0, self.cooldown_max)
         self.flash_timer = 0
-
-        # onboard arsenal: longer-range missile classes carry more ammunition types; bosses carry all
-        self.arsenal = [a for a, spec in AMMO_TYPES.items() if is_boss or self.tier >= spec["from_tier"]]
-        self.reload_mult = 0.75 if self.tier == 5 else 1.0   # hypersonic class reloads faster
-        # random start offsets so a wave doesn't fire every weapon on the same frame
-        self.ammo_cd = {a: random.randint(30, AMMO_TYPES[a]["cooldown"]) for a in self.arsenal}
 
     def update(self, holes, target_x, target_y, screen_w, screen_h, threats=()):
         """threats = the jet's bullets in flight (used by the JINK tactic)."""
@@ -534,43 +496,8 @@ class MissileEnemy:
         if len(self.trail) > 14:
             self.trail.pop(0)
 
-        if self.is_burrowed:
-            return None
-        cx, cy = self.x + self.width // 2, self.y + self.height // 2
-        b_angle = math.atan2(target_y - cy, target_x - cx)
-        dist = math.hypot(target_x - cx, target_y - cy)
-        shots = []
-
-        # PLASMA BOLT: every missile fires its shots at the jet, exactly as the enemy drones did before
-        self.shoot_timer += 1
-        if self.shoot_timer >= self.cooldown_max:
-            self.shoot_timer = 0
-            bullet_col = (255, 60, 90) if self.is_boss else (0, 220, 255)
-            shots.append({
-                "x": cx, "y": cy,
-                "vx": math.cos(b_angle) * 7.5 * self.pace, "vy": math.sin(b_angle) * 7.5 * self.pace,
-                "color": bullet_col, "dmg": int((20 if self.is_boss else 12) * self.power),
-            })
-            if self.mutator == "BULLET HELL SURGE":
-                for spread in (-0.22, 0.22):
-                    shots.append({
-                        "x": cx, "y": cy,
-                        "vx": math.cos(b_angle + spread) * 7.0 * self.pace, "vy": math.sin(b_angle + spread) * 7.0 * self.pace,
-                        "color": (255, 140, 20), "dmg": int(10 * self.power),
-                    })
-
-        # ONBOARD ARSENAL: each ammunition type fires on its own when the jet is inside its range band
-        for ammo in self.arsenal:
-            spec = AMMO_TYPES[ammo]
-            if self.ammo_cd[ammo] > 0:
-                self.ammo_cd[ammo] -= 1
-                continue
-            if not (spec["min_range"] <= dist <= spec["max_range"]):
-                continue
-            self.ammo_cd[ammo] = int(spec["cooldown"] * self.reload_mult)
-            shots.extend(make_ammo(ammo, cx, cy, b_angle, dist, self.is_boss, self.power, self.pace))
-
-        return shots or None
+        # missiles carry no guns: their only attack is to reach the jet (proximity fuse in the game loop)
+        return None
 
     @property
     def rect(self):
@@ -837,6 +764,13 @@ async def main():
 
     # CAMOUFLAGE ('C' key / gamepad Share): jet fades out, missiles lose their lock
     CAMO_DURATION = 240      # 4 s
+    # STEALTH ('V'): 2 s fully hidden from missiles AND launchers -- no lock, fuses can't sense the jet,
+    # launchers hold fire -- then 8 s to recharge (counted from activation)
+    STEALTH_DURATION = 120
+    STEALTH_COOLDOWN = 480
+    p1_stealth_timer = 0
+    p1_stealth_cd = 0
+    p1_stealth_x, p1_stealth_y = 0.0, 0.0
     CAMO_COOLDOWN = 720      # 12 s from activation until it can be used again
     p1_camo_timer = 0
     p1_camo_cd = 0
@@ -901,10 +835,26 @@ async def main():
 
     campaign_enemies = spawn_campaign_wave(current_level)
     p1_bullets = []
-    p2_bullets = []
-    enemy_bullets = []
     hit_sparks = []
     floating_texts = []
+
+    # missile self-destruct fireballs: [x, y, age, scale]
+    FUSE_RADIUS = 60          # a missile detonates when its centre comes this close to the jet's centre
+    BLAST_FRAMES = 20
+    blasts = []
+
+    def draw_blasts():
+        for bl in blasts[:]:
+            bl[2] += 1
+            if bl[2] > BLAST_FRAMES:
+                blasts.remove(bl)
+                continue
+            r = int((10 + bl[2] * 2.6) * bl[3])
+            fade = 1 - bl[2] / BLAST_FRAMES
+            cx, cy = int(bl[0]), int(bl[1])
+            pygame.draw.circle(screen, (int(200 * fade + 40), int(50 * fade), 0), (cx, cy), r)
+            pygame.draw.circle(screen, (255, int(150 * fade + 60), 0), (cx, cy), int(r * 0.65))
+            pygame.draw.circle(screen, (255, 240, int(160 * fade)), (cx, cy), int(r * 0.3))
 
     def handle_round_conclusion(winner: str, origin_mode: str):
         nonlocal game_state, break_timer, break_winner, prev_mode, milestone_count, active_mutator, p1_split_timer, milestone_reward_pending
@@ -936,14 +886,12 @@ async def main():
         SFX.snd_hit.play()
 
     def reset_positions():
-        nonlocal p1_x, p1_y, p2_x, p2_y, p1_bullets, p2_bullets, enemy_bullets, active_decoys, p1_split_timer, p1_vx, p1_vy
+        nonlocal p1_x, p1_y, p2_x, p2_y, p1_bullets, active_decoys, p1_split_timer, p1_vx, p1_vy
         p1_x, p1_y = 120.0, 300.0
         p1_vx, p1_vy = 3.0, 0.0
         autopilot.update({"mode": "cruise", "t": 120, "head": 0.0, "roll": 0.0})
         p2_x, p2_y = 650.0, 300.0
         p1_bullets.clear()
-        p2_bullets.clear()
-        enemy_bullets.clear()
         active_decoys.clear()
         p1_split_timer = 0
 
@@ -1067,6 +1015,14 @@ async def main():
                     SFX.snd_split.play()
                     floating_texts.append(["TRIPLE JET SQUAD!", p1_x - 40, p1_y - 35, (255, 215, 60), 50])
 
+            # P1 STEALTH (Key 'V'): 2 s invisible to missiles and launchers
+            if game_state in ("CAMPAIGN", "DUEL") and p1_stealth_cd == 0 and p1_hp > 0:
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_v:
+                    p1_stealth_timer = STEALTH_DURATION
+                    p1_stealth_cd = STEALTH_COOLDOWN
+                    p1_stealth_x, p1_stealth_y = p1_x + 50, p1_y + 40
+                    SFX.snd_decoy.play()
+
             # P1 CAMOUFLAGE (Key 'C' or Controller Share): fade out, missiles head for the last seen spot
             if game_state in ("CAMPAIGN", "DUEL") and p1_camo_cd == 0 and p1_hp > 0:
                 if (event.type == pygame.KEYDOWN and event.key == pygame.K_c) or \
@@ -1179,8 +1135,8 @@ async def main():
                 "[EQUAL BALANCED COMBAT]:",
                 "- Equal 120 HP for both players",
                 "- P1: Press 'T' to split into 3 units",
-                "- Multi-Image Decoys for both",
-                "- Tiers 3-5: LASER RAYS FOR BOTH",
+                "- P2 missile has no guns: ram the jet",
+                "- Jet lasers at tiers 3-5 (Press 'L')",
                 "- Camouflage [C] & Dogfight Autopilot",
                 "- P2 Burrow & Teleport Ambush",
                 "",
@@ -1204,6 +1160,7 @@ async def main():
         # STATE 1B: JET CRASH (shot down -> burning fall -> fireball on the ground)
         # ======================================================================
         if game_state == "JET_CRASH":
+            draw_blasts()   # the blast that brought the jet down keeps burning while it falls
             if crash["origin"] == "CAMPAIGN":
                 draw_launchers(crash["level_boss"])
                 for e in campaign_enemies:
@@ -1280,6 +1237,8 @@ async def main():
                         current_level += 1
                     p1_hp = min(p1_max_hp, p1_hp + 40)
                     campaign_enemies = spawn_campaign_wave(current_level)
+                    if break_winner == "P2":
+                        p1_hp = p1_max_hp   # the jet was shot down: a fresh jet takes off with full HP
                     # Auto split into 3 jets on Boss Stages (Every 10th level)
                     if current_level % 10 == 0:
                         p1_split_timer = 500
@@ -1312,7 +1271,6 @@ async def main():
         center_p1_x = p1_x + 50
         center_p1_y = p1_y + 40
         p1_laser_active = False
-        p2_laser_active = False
 
         if p1_split_timer > 0:
             p1_split_timer -= 1
@@ -1320,6 +1278,10 @@ async def main():
             p1_camo_timer -= 1
         if p1_camo_cd > 0:
             p1_camo_cd -= 1
+        if p1_stealth_timer > 0:
+            p1_stealth_timer -= 1
+        if p1_stealth_cd > 0:
+            p1_stealth_cd -= 1
 
         for dec in active_decoys[:]:
             dec["life"] -= 1
@@ -1485,77 +1447,33 @@ async def main():
                 p1_target_y = p1_decoys_active[0]["y"] + 30
             elif p1_camo_timer > 0:
                 p1_target_x, p1_target_y = p1_camo_x, p1_camo_y
+            if p1_stealth_timer > 0:
+                p1_target_x, p1_target_y = p1_stealth_x, p1_stealth_y
+                for e in campaign_enemies:
+                    if e.launch_delay > 0:
+                        e.launch_delay += 1   # launchers hold fire: no target to launch at
 
             for e in campaign_enemies:
-                shots = e.update(burrow_holes, p1_target_x, p1_target_y, SCREEN_WIDTH, SCREEN_HEIGHT, threats=p1_bullets)
-                if shots and p1_hp > 0:
-                    enemy_bullets.extend(shots)
+                e.update(burrow_holes, p1_target_x, p1_target_y, SCREEN_WIDTH, SCREEN_HEIGHT, threats=p1_bullets)
 
-            # Missile contact: one hit per pass, then it overshoots and loops back.
-            # Holding the shield (E) deflects the missile instead and damages it.
-            jet_hitbox = pygame.Rect(p1_x + 15, p1_y + 10, 70, 60)
+            # PROXIMITY FUSE: a launcher's missile is built to bring the jet down. When it gets close
+            # enough (a direct hit or a near miss) it blows itself up and the jet crashes. Only the
+            # shield (E) survives the blast. The missile is gone either way; only missiles shot down
+            # by the jet score points.
+            jet_cx, jet_cy = p1_x + 50, p1_y + 40
             for e in campaign_enemies[:]:
-                if e.is_burrowed or e.contact_cd > 0 or p1_hp <= 0 or not e.rect.colliderect(jet_hitbox):
+                if e.is_burrowed or e.launch_delay > 0 or p1_hp <= 0 or p1_stealth_timer > 0:
                     continue
-                e.contact_cd = 50
+                ex, ey = e.x + e.width / 2, e.y + e.height / 2
+                if math.hypot(ex - jet_cx, ey - jet_cy) > FUSE_RADIUS * (1.4 if e.is_boss else 1.0):
+                    continue
+                campaign_enemies.remove(e)
+                blasts.append([ex, ey, 0, 1.6 if e.is_boss else 1.0])
+                SFX.snd_explode.play()
                 if p1_guard:
-                    e.heading += math.pi
-                    e.hp -= 25
-                    e.flash_timer = 4
-                    SFX.snd_shield.play()
-                    if e.hp <= 0:
-                        campaign_enemies.remove(e)
-                        SFX.snd_explode.play()
-                else:
-                    p1_hp = max(0, p1_hp - e.contact_dmg)
-                    SFX.snd_hit.play()
-
-            for b in enemy_bullets[:]:
-                kind = b.get("kind")
-                if kind == "homing":
-                    # micro-missile curves toward the jet (or its decoy / camouflage spot), then burns out
-                    b["life"] -= 1
-                    if b["life"] <= 0:
-                        enemy_bullets.remove(b)
-                        continue
-                    cur = math.atan2(b["vy"], b["vx"])
-                    want = math.atan2(p1_target_y - b["y"], p1_target_x - b["x"])
-                    diff = (want - cur + math.pi) % (2 * math.pi) - math.pi
-                    cur += max(-b["turn"], min(b["turn"], diff))
-                    spd = math.hypot(b["vx"], b["vy"])
-                    b["vx"], b["vy"] = math.cos(cur) * spd, math.sin(cur) * spd
-                elif kind == "flak":
-                    b["fuse"] -= 1
-                    if b["fuse"] <= 0:
-                        # shell bursts into a ring of fragments
-                        enemy_bullets.remove(b)
-                        for k in range(10):
-                            a = 2 * math.pi * k / 10
-                            enemy_bullets.append({"x": b["x"], "y": b["y"], "vx": math.cos(a) * 4.5, "vy": math.sin(a) * 4.5,
-                                                  "life": 40, "kind": "fragment", "color": (255, 170, 80), "radius": 3,
-                                                  "dmg": max(3, b["dmg"] // 2)})
-                        continue
-                elif kind == "fragment":
-                    b["life"] -= 1
-                    if b["life"] <= 0:
-                        enemy_bullets.remove(b)
-                        continue
-                b["x"] += b["vx"]
-                b["y"] += b["vy"]
-                if b["x"] < 0 or b["x"] > SCREEN_WIDTH or b["y"] < 0 or b["y"] > SCREEN_HEIGHT:
-                    enemy_bullets.remove(b)
-
-            p1_hitbox = pygame.Rect(p1_x + 15, p1_y + 10, 70, 60)
-            for b in enemy_bullets[:]:
-                b_rect = pygame.Rect(b["x"] - 6, b["y"] - 6, 12, 12)
-                if p1_guard and math.hypot(b["x"] - center_p1_x, b["y"] - center_p1_y) < 60:
-                    enemy_bullets.remove(b)
-                    SFX.snd_shield.play()
                     floating_texts.append(["BLOCKED!", center_p1_x - 20, center_p1_y - 40, (0, 255, 220), 20])
-                elif p1_hitbox.colliderect(b_rect):
-                    p1_hp = max(0, p1_hp - b["dmg"])
-                    enemy_bullets.remove(b)
-                    SFX.snd_hit.play()
+                else:
+                    p1_hp = 0   # missile reached the jet: it goes down (crash sequence below)
 
             for b in p1_bullets[:]:
                 b_rect = pygame.Rect(b["x"] - b["radius"], b["y"] - b["radius"], b["radius"] * 2, b["radius"] * 2)
@@ -1596,6 +1514,8 @@ async def main():
             pending = [li for li, ln in enumerate(launchers) if ln["alive"] and ln["reloads"] > 0]
             for li in pending:
                 ln = launchers[li]
+                if p1_stealth_timer > 0:
+                    continue                                   # launchers hold fire while the jet is hidden
                 ln["reload_cd"] -= 1
                 if not campaign_enemies:
                     ln["reload_cd"] = min(ln["reload_cd"], 60)   # sky is empty: launch soon
@@ -1666,76 +1586,21 @@ async def main():
                     p2_dy = aim_target_y - center_p2_y
                     p2_angle = math.degrees(math.atan2(p2_dy, p2_dx))
 
-                    p2_current_wpn = WEAPON_TIERS[p2_power_tier]
-                    p2_pad_shoot = ps_pad_p2 and (ps_pad_p2.get_button(0) or ps_pad_p2.get_button(7))
-                    p2_is_firing = (keys[pygame.K_KP0] or keys[pygame.K_RSHIFT] or p2_pad_shoot)
-
-                    if p2_current_wpn["type"] == "laser" and p2_is_firing:
-                        p2_laser_active = True
-                        rad = math.radians(p2_angle)
-                        p2_laser_end_x = center_p2_x + math.cos(rad) * 900
-                        p2_laser_end_y = center_p2_y + math.sin(rad) * 900
-
-                        if random.random() < 0.2:
-                            SFX.snd_laser.play()
-
-                        p2_dmg_box = pygame.Rect(min(center_p2_x, p2_laser_end_x), min(center_p2_y, p2_laser_end_y),
-                                                 abs(p2_laser_end_x - center_p2_x) + 12, abs(p2_laser_end_y - center_p2_y) + 12)
-
-                        p1_hitbox = pygame.Rect(p1_x + 15, p1_y + 10, 70, 60)
-                        if p1_guard and math.hypot(center_p2_x - center_p1_x, center_p2_y - center_p1_y) < 220:
-                            SFX.snd_shield.play()
-                        elif p1_hitbox.colliderect(p2_dmg_box) and p1_hp > 0:
-                            p1_hp = max(0, p1_hp - p2_current_wpn["dmg"])
-                            p2_power_charge += 1.5
-                            if random.random() < 0.3:
-                                hit_sparks.append([center_p1_x, center_p1_y, random.uniform(-4, 4), random.uniform(-4, 4), 3, (0, 210, 255), 12])
-
-                        if p2_power_charge >= 100.0 and p2_power_tier < 5:
-                            p2_power_charge = 0.0
-                            p2_power_tier += 1
-                            floating_texts.append([f"P2 LASER TIER {p2_power_tier}!", center_p2_x - 40, center_p2_y - 30, (0, 240, 255), 40])
-
-                    elif p2_current_wpn["type"] == "bullet":
-                        if p2_shoot_cd > 0:
-                            p2_shoot_cd -= 1
-                        if p2_is_firing and p2_shoot_cd == 0:
-                            rad = math.radians(p2_angle)
-                            p2_bullets.append({
-                                "x": center_p2_x, "y": center_p2_y,
-                                "vx": math.cos(rad) * p2_current_wpn["speed"],
-                                "vy": math.sin(rad) * p2_current_wpn["speed"],
-                                "radius": 5 + p2_power_tier,
-                                "dmg": p2_current_wpn["dmg"],
-                            })
-                            SFX.snd_v_shoot.play()
-                            p2_shoot_cd = 12
-
             if p2_flash_timer > 0:
                 p2_flash_timer -= 1
 
-            for b in p2_bullets[:]:
-                b["x"] += b["vx"]
-                b["y"] += b["vy"]
-                if b["x"] < 0 or b["x"] > SCREEN_WIDTH or b["y"] < 0 or b["y"] > SCREEN_HEIGHT:
-                    p2_bullets.remove(b)
-
-            p1_hitbox = pygame.Rect(p1_x + 15, p1_y + 10, 70, 60)
+            # P2's missile has no guns: like the AI missiles it wins by reaching the jet (proximity fuse).
+            # Against a raised shield it blows itself up for nothing, and the jet wins the round.
             p2_hitbox = pygame.Rect(p2_x + 10, p2_y + 10, 70, 45)
-
-            for b in p2_bullets[:]:
-                b_rect = pygame.Rect(b["x"] - 5, b["y"] - 5, 10, 10)
-                if p1_guard and math.hypot(b["x"] - center_p1_x, b["y"] - center_p1_y) < 58:
-                    p2_bullets.remove(b)
-                    SFX.snd_shield.play()
-                elif p1_hitbox.colliderect(b_rect) and p1_hp > 0:
-                    p1_hp = max(0, p1_hp - b["dmg"])
-                    p2_bullets.remove(b)
-                    SFX.snd_hit.play()
-                    p2_power_charge += 24.0
-                    if p2_power_charge >= 100.0 and p2_power_tier < 5:
-                        p2_power_charge = 0.0
-                        p2_power_tier += 1
+            if p2_hp > 0 and p1_hp > 0 and not p2_is_burrowed and p1_stealth_timer == 0 and \
+                    math.hypot(p2_x + 40 - center_p1_x, p2_y + 25 - center_p1_y) < FUSE_RADIUS:
+                blasts.append([p2_x + 40, p2_y + 25, 0, 1.0])
+                SFX.snd_explode.play()
+                if p1_guard:
+                    floating_texts.append(["BLOCKED!", center_p1_x - 20, center_p1_y - 40, (0, 255, 220), 20])
+                    p2_hp = 0
+                else:
+                    p1_hp = 0
 
             for b in p1_bullets[:]:
                 b_rect = pygame.Rect(b["x"] - 6, b["y"] - 6, 12, 12)
@@ -1768,12 +1633,6 @@ async def main():
             pygame.draw.circle(screen, b["color_outer"], (int(b["x"]), int(b["y"])), b["radius"])
             pygame.draw.circle(screen, b["color_core"], (int(b["x"]), int(b["y"])), max(2, b["radius"] - 3))
 
-        for b in (enemy_bullets if game_state == "CAMPAIGN" else p2_bullets):
-            color = b["color"] if "color" in b else (0, 210, 255)
-            r = b["radius"] if "radius" in b else 6
-            pygame.draw.circle(screen, color, (int(b["x"]), int(b["y"])), r)
-            pygame.draw.circle(screen, (255, 255, 255), (int(b["x"]), int(b["y"])), max(2, r - 3))
-
         # Draw Cyber Laser Beams
         if p1_laser_active:
             wpn = WEAPON_TIERS[p1_power_tier]
@@ -1789,11 +1648,6 @@ async def main():
                     pygame.draw.line(screen, wpn["color_outer"], (ox, oy), (lex, ley), wpn["beam_w"] + 4)
                     pygame.draw.line(screen, (255, 255, 255), (ox, oy), (lex, ley), max(2, wpn["beam_w"] - 2))
 
-        if p2_laser_active:
-            wpn = WEAPON_TIERS[p2_power_tier]
-            pygame.draw.line(screen, wpn["color_outer"], (center_p2_x, center_p2_y), (p2_laser_end_x, p2_laser_end_y), wpn["beam_w"] + 8)
-            pygame.draw.line(screen, (255, 255, 255), (center_p2_x, center_p2_y), (p2_laser_end_x, p2_laser_end_y), wpn["beam_w"])
-            pygame.draw.circle(screen, wpn["color_core"], (int(center_p2_x), int(center_p2_y)), wpn["beam_w"] + 4)
 
         for dec in active_decoys:
             alpha = 130 + int(math.sin(dec["life"] * 0.2) * 50)
@@ -1824,7 +1678,7 @@ async def main():
                 screen.blit(font.render(ft[0], True, ft[3]), (int(ft[1]), int(ft[2])))
 
         # Draw Player 1 & active jet squad
-        camo_alpha = 60 if p1_camo_timer > 0 else 255
+        camo_alpha = 35 if p1_stealth_timer > 0 else (60 if p1_camo_timer > 0 else 255)
         # the jet points its nose where it is flying; banking into a turn (and barrel rolls)
         # squeeze the wings, so it reads as a real aircraft manoeuvring
         jet_heading = math.atan2(p1_vy, p1_vx)
@@ -1872,6 +1726,8 @@ async def main():
             else:
                 screen.blit(font.render("[UNDERGROUND]", True, (200, 100, 255)), (center_p2_x - 45, center_p2_y - 30))
 
+        draw_blasts()   # missile self-destruct fireballs, on top of the jet and missiles
+
         if active_mutator == "BLACKOUT FOG" and game_state == "CAMPAIGN":
             dark_overlay.fill((5, 5, 10, 230))
             pygame.draw.circle(dark_overlay, (0, 0, 0, 0), (int(center_p1_x), int(center_p1_y)), 140)
@@ -1904,6 +1760,13 @@ async def main():
         else:
             camo_stat, camo_col = "CAMOUFLAGE [C]: READY", (120, 255, 160)
         screen.blit(font.render(camo_stat, True, camo_col), (20, 96))
+        if p1_stealth_timer > 0:
+            st_stat, st_col = f"STEALTH ACTIVE ({p1_stealth_timer // 60 + 1}s)", (150, 200, 255)
+        elif p1_stealth_cd > 0:
+            st_stat, st_col = f"STEALTH [V]: RECHARGING {p1_stealth_cd // 60 + 1}s", (120, 130, 150)
+        else:
+            st_stat, st_col = "STEALTH [V]: READY", (150, 200, 255)
+        screen.blit(font.render(st_stat, True, st_col), (20, 116))
 
         if game_state == "CAMPAIGN":
             lvl_col = (255, 60, 90) if current_level > 100 else (255, 230, 100)
@@ -1924,8 +1787,7 @@ async def main():
             p2_col = (0, 210, 255) if p2_hp > 35 else (255, 60, 60)
             p2_head = font.render("P2: MISSILE", True, (0, 210, 255))
             p2_num = num_font.render(f"HP: {int(p2_hp)} / {p2_max_hp}", True, p2_col)
-            p2_wpn_desc = f"TIER {p2_power_tier}: {WEAPON_TIERS[p2_power_tier]['name']}"
-            p2_sub = font.render(f"{p2_wpn_desc} | WINS: {p2_wins}", True, (200, 210, 230))
+            p2_sub = font.render(f"NO GUNS - RAM THE JET | WINS: {p2_wins}", True, (200, 210, 230))
             screen.blit(p2_head, (SCREEN_WIDTH - p2_head.get_width() - 20, 12))
             screen.blit(p2_num, (SCREEN_WIDTH - p2_num.get_width() - 20, 30))
             screen.blit(p2_sub, (SCREEN_WIDTH - p2_sub.get_width() - 20, 56))

@@ -38,25 +38,12 @@ def test_ai_tactics_unlock_with_level():
     assert main.active_tactics(60) == ["JINK", "FLANK", "RELOAD", "SPRINT", "ECM"]
 
 
-def test_ammunition_types_and_scaling():
-    scatter = main.make_ammo("scatter", 0, 0, 0.0, 100, False)
-    assert len(scatter) == 3
-    flak = main.make_ammo("flak", 0, 0, 0.0, 300, False)
-    assert flak[0]["kind"] == "flak" and flak[0]["fuse"] > 0
-    homing = main.make_ammo("homing", 0, 0, 0.0, 500, False)
-    assert homing[0]["kind"] == "homing" and homing[0]["life"] == 180
-    # damage follows power (and bosses), speed follows pace
-    strong = main.make_ammo("homing", 0, 0, 0.0, 500, True, power=2.0, pace=0.5)[0]
-    assert strong["dmg"] == int(15 * 1.5 * 2.0)
-    assert math.hypot(strong["vx"], strong["vy"]) == pytest.approx(4.2 * 0.5)
-
-
-def test_arsenal_grows_with_missile_class():
-    assert main.MissileEnemy(1).arsenal == []
-    assert main.MissileEnemy(21).arsenal == ["scatter"]
-    assert main.MissileEnemy(41).arsenal == ["scatter", "flak"]
-    assert main.MissileEnemy(61).arsenal == ["scatter", "flak", "homing"]
-    assert main.MissileEnemy(5, is_boss=True).arsenal == ["scatter", "flak", "homing"]
+@pytest.mark.parametrize("level,boss", [(1, False), (25, False), (45, False), (65, False), (90, False), (40, True)])
+def test_missiles_never_fire(level, boss):
+    """A missile's only attack is to reach the jet (proximity fuse in the game loop): update() never returns shots."""
+    e = main.MissileEnemy(level, is_boss=boss, launch_x=400, ground_y=540)
+    for f in range(1500):
+        assert e.update([(200, 140), (600, 150)], 400 + 250 * math.cos(f * 0.02), 300, 800, 600) is None
 
 
 def test_missile_waits_on_launcher_then_climbs():

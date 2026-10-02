@@ -15,6 +15,14 @@ Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2
 - **The jet always flies.** Hands off the keys, `autopilot_velocity` flies cruise/climb/dive/loop/roll and
   dogfight break turns; the sprite points along the flight path and banks/rolls.
 - **Launchers** (6, one stretch of ground each) need at least 2 hits (boss silo 4), rebuilt every wave.
+- **Missiles never fire** (user, 2026-10-02: "either it hit or destroy itself near to target"). Their only
+  attack is the proximity fuse (`FUSE_RADIUS` 60, boss x1.4): within range the missile blows itself up and the
+  jet crashes (`p1_hp = 0`); a held shield absorbs the blast. The onboard-ammunition system and the
+  "Bullet Hell Surge" mutator were removed for this. In the 2P duel, P2's missile has no guns and wins by ramming.
+- After a crash, the next round's jet starts with full HP.
+- **Stealth key V** (user, 2026-10-02): 2 s (`STEALTH_DURATION`) invisible to missiles and launchers: missiles fly
+  to the last seen spot, the proximity fuse ignores the jet (also P2 in the duel), missiles on launchers and
+  RELOAD launches wait; 8 s recharge from activation. Separate from camouflage C (4 s fade, fuses still work).
 - The user tests gameplay themselves: say what changed, let them play it, commit when they say so.
 
 ## Facts
