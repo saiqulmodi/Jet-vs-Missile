@@ -25,6 +25,16 @@ Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2
   RELOAD launches wait; 8 s recharge from activation. Separate from camouflage C (4 s fade, fuses still work).
 - The user tests gameplay themselves: say what changed, let them play it, commit when they say so.
 
+- **Phone version** (user, 2026-10-02): touch controls in `main.py` (`MOBILE = detect_mobile()`, `touch` dict,
+  `finger_down/motion/up`, `draw_touch_controls`): thumb stick on the left half, FIRE (auto-aim via
+  `touch_aim_target`) and SHIELD held, STEALTH/CAMO/FLARES/SQUAD/HEAL post the same keys as the keyboard,
+  card taps, level-strip taps, MENU = Esc. Touch-made mouse events are ignored (`event.touch`). The canvas is
+  fitted to the browser window (`fit_canvas_to_browser`, 4:3). Test on desktop with `JVM_MOBILE=1`.
+- **Game controller**: d-pad (hat on desktop, buttons 12-15 in browsers) up = stealth, down = camouflage,
+  left/right = previous/next level; any controller input hides the touch buttons.
+- **Jet size** (user, 2026-10-02): small (`JET_BASE_SCALE` 0.62) and smaller the higher it flies
+  (`jet_size_factor`, 0.6x at the top); `jet_fuse_radius` follows the drawn size (60 px low, ~42 px high).
+
 ## Facts
 
 - Venv: `venv/` (gitignored). Run: `venv\Scripts\pythonw.exe main.py` (no console window).

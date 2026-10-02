@@ -4,6 +4,7 @@ import json
 import math
 from pathlib import Path
 import random
+import sys
 import pygame
 
 pygame.init()
@@ -13,6 +14,63 @@ pygame.joystick.init()
 joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
 
 SAVE_FILE = Path("save.json")
+
+GAME_W, GAME_H = 800, 600
+_last_fit = None
+_portrait = False   # phone held upright (taller than wide)
+
+
+def detect_mobile():
+    """True on phones/tablets (finger as the main pointer) or with ?mobile in the link.
+    Desktop tests can force it with the JVM_MOBILE=1 environment variable."""
+    import os
+    if os.environ.get("JVM_MOBILE") == "1":
+        return True
+    if sys.platform != "emscripten":
+        return False
+    try:
+        import platform
+        win = platform.window
+        if "mobile" in str(win.location.search).lower():
+            return True
+        return bool(win.matchMedia("(pointer: coarse)").matches)
+    except Exception:
+        return False
+
+
+def fit_canvas_to_browser():
+    """Browser only: scale the 800x600 game to fill the window without cropping (black bars
+    fill any spare space). Re-applied regularly because the loader resizes the canvas itself."""
+    global _last_fit, _portrait
+    if sys.platform != "emscripten":
+        return
+    try:
+        import platform
+        win = platform.window
+        vw, vh = int(win.innerWidth), int(win.innerHeight)
+        _portrait = vh > vw
+        k = min(vw / GAME_W, vh / GAME_H)
+        w, h = int(GAME_W * k), int(GAME_H * k)
+        style = win.canvas.style
+        if _last_fit == (vw, vh) and style.width == f"{w}px" and style.height == f"{h}px":
+            return
+        _last_fit = (vw, vh)
+        body = win.document.body.style
+        body.margin = "0"
+        body.padding = "0"
+        body.overflow = "hidden"
+        body.backgroundColor = "#05060d"
+        style.position = "fixed"
+        style.margin = "0"
+        style.padding = "0"
+        style.border = "none"
+        style.display = "block"
+        style.left = f"{(vw - w) // 2}px"
+        style.top = f"{(vh - h) // 2}px"
+        style.width = f"{w}px"
+        style.height = f"{h}px"
+    except Exception:
+        pass
 
 
 # ==============================================================================
@@ -839,7 +897,19 @@ async def main():
     floating_texts = []
 
     # missile self-destruct fireballs: [x, y, age, scale]
-    FUSE_RADIUS = 60          # a missile detonates when its centre comes this close to the jet's centre
+    FUSE_RADIUS = 60          # fuse distance for a jet flying low (full size); see jet_fuse_radius
+
+    # JET SIZE (user, 2026-10-02): the jet is small, and smaller the further it is from the targets on the
+    # ground -- perspective: low over the launchers = closest = biggest, top of the sky = 60% of that.
+    JET_BASE_SCALE = 0.62     # of the original 144x120 drawing
+
+    def jet_size_factor(cy):
+        t = max(0.0, min(1.0, (cy - 95) / (GROUND_Y - 40 - 95)))   # 0 = top of the sky, 1 = lowest flight
+        return JET_BASE_SCALE * (0.6 + 0.4 * t)
+
+    def jet_fuse_radius(cy):
+        # a missile detonates when it touches the jet as drawn: half the jet's length plus the missile's nose
+        return 15 + 72 * jet_size_factor(cy)
     BLAST_FRAMES = 20
     blasts = []
 
@@ -937,13 +1007,215 @@ async def main():
             label = font.render(str(lvl), True, (20, 20, 20) if current else (220, 225, 240))
             screen.blit(label, label.get_rect(center=r.center))
 
+    # ======================================================================
+    # TOUCH CONTROLS (phones / tablets): thumb joystick on the left half, FIRE (auto-aim) and
+    # SHIELD (hold) plus tap buttons on the right. Shown from the start on phones, or as soon as
+    # the screen is touched; hidden again when a game controller is used.
+    # ======================================================================
+    MOBILE = detect_mobile()
+    touch = {"on": MOBILE, "stick_id": None, "origin": (0.0, 0.0), "vec": (0.0, 0.0),
+             "fire_ids": set(), "shield_ids": set(), "finger_seen": False}
+    STICK_R = 70
+    FIRE_C, FIRE_R = (715, 480), 58
+    TOUCH_BUTTONS = [   # label, key it presses (None = held shield), centre, radius
+        ("SHIELD", None, (598, 522), 30),
+        ("HEAL", pygame.K_q, (598, 448), 26),
+        ("SQUAD", pygame.K_t, (565, 378), 30),
+        ("STEALTH", pygame.K_v, (630, 378), 30),
+        ("CAMO", pygame.K_c, (695, 378), 30),
+        ("FLARES", pygame.K_f, (760, 378), 30),
+    ]
+    TOUCH_MENU = pygame.Rect(SCREEN_WIDTH - 74, 32, 62, 24)
+    CARD1 = pygame.Rect(55, 150, 335, 325)
+    CARD2 = pygame.Rect(410, 150, 335, 325)
+    touch_font = pygame.font.SysFont("consolas", 12, bold=True)
+    touch_big = pygame.font.SysFont("consolas", 20, bold=True)
+    last_fit_ms = -1000
+
+    def post_key(k):
+        pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=k, mod=0, unicode="", scancode=0))
+
+    def touch_aim_target(cx, cy):
+        """FIRE on a phone aims at the nearest flying missile, else the nearest launcher."""
+        if game_state == "CAMPAIGN":
+            flying = [e for e in campaign_enemies if not e.is_burrowed]
+            if flying:
+                e = min(flying, key=lambda e: math.hypot(e.x + e.width / 2 - cx, e.y + e.height / 2 - cy))
+                return e.x + e.width / 2, e.y + e.height / 2
+            alive = [ln for ln in launchers if ln["alive"]]
+            if alive:
+                ln = min(alive, key=lambda ln: abs(ln["x"] - cx))
+                return ln["x"], GROUND_Y - 14
+        elif game_state == "DUEL" and p2_hp > 0 and not p2_is_burrowed:
+            return p2_x + 40, p2_y + 25
+        return None
+
+    def finger_down(tx, ty, fid):
+        touch["on"] = True
+        if game_state == "MODE_SELECT":
+            if CARD1.collidepoint(tx, ty):
+                post_key(pygame.K_1)
+            elif CARD2.collidepoint(tx, ty):
+                post_key(pygame.K_2)
+            return
+        if game_state not in ("CAMPAIGN", "DUEL"):
+            return
+        if game_state == "CAMPAIGN":
+            if TOUCH_MENU.inflate(16, 20).collidepoint(tx, ty):
+                post_key(pygame.K_ESCAPE)
+                return
+            if ty >= LEVEL_BAR_TOP:
+                for lvl, r in level_bar_slots():
+                    if r.inflate(2, 14).collidepoint(tx, ty):
+                        jump_to_level(lvl)
+                        return
+                if tx < 120:
+                    post_key(pygame.K_p)
+                elif tx > SCREEN_WIDTH - 120:
+                    post_key(pygame.K_n)
+                return
+        for label, key, c, r in TOUCH_BUTTONS:
+            if math.hypot(tx - c[0], ty - c[1]) < r * 1.3:
+                if key is None:
+                    touch["shield_ids"].add(fid)
+                else:
+                    post_key(key)
+                return
+        if tx < SCREEN_WIDTH / 2:
+            touch["stick_id"] = fid
+            touch["origin"] = (tx, ty)
+            touch["vec"] = (0.0, 0.0)
+        else:
+            touch["fire_ids"].add(fid)        # FIRE button, or anywhere else on the right half
+
+    def finger_motion(tx, ty, fid):
+        if fid == touch["stick_id"]:
+            ox, oy = touch["origin"]
+            vx, vy = (tx - ox) / STICK_R, (ty - oy) / STICK_R
+            m = math.hypot(vx, vy)
+            if m < 0.2:
+                vx = vy = 0.0
+            elif m > 1.0:
+                vx, vy = vx / m, vy / m
+            touch["vec"] = (vx, vy)
+
+    def finger_up(fid):
+        touch["fire_ids"].discard(fid)
+        touch["shield_ids"].discard(fid)
+        if fid == touch["stick_id"]:
+            touch["stick_id"] = None
+            touch["vec"] = (0.0, 0.0)
+
+    def draw_touch_controls():
+        ui = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        base = touch["origin"] if touch["stick_id"] is not None else (120, 470)
+        knob = (base[0] + touch["vec"][0] * STICK_R, base[1] + touch["vec"][1] * STICK_R)
+        pygame.draw.circle(ui, (0, 229, 212, 45), base, STICK_R)
+        pygame.draw.circle(ui, (0, 229, 212, 170), base, STICK_R, 3)
+        pygame.draw.circle(ui, (0, 229, 212, 190), (int(knob[0]), int(knob[1])), 26)
+        firing = bool(touch["fire_ids"])
+        pygame.draw.circle(ui, (255, 70, 70, 235) if firing else (225, 40, 55, 190), FIRE_C, FIRE_R)
+        pygame.draw.circle(ui, (255, 255, 255, 230), FIRE_C, FIRE_R, 4)
+        for label, key, c, r in TOUCH_BUTTONS:
+            ready = True
+            if label == "STEALTH":
+                ready = p1_stealth_cd == 0
+            elif label == "CAMO":
+                ready = p1_camo_cd == 0
+            elif label == "HEAL":
+                ready = p1_med_kits > 0
+            elif label == "FLARES":
+                ready = p1_decoys > 0
+            elif label == "SQUAD":
+                ready = p1_split_charges > 0 and p1_split_timer == 0
+            held = label == "SHIELD" and bool(touch["shield_ids"])
+            col = (0, 200, 255, 235) if held else ((40, 120, 200, 200) if ready else (60, 65, 80, 160))
+            pygame.draw.circle(ui, col, c, r)
+            pygame.draw.circle(ui, (230, 240, 255, 220), c, r, 2)
+        screen.blit(ui, (0, 0))
+        t = touch_big.render("FIRE", True, (255, 255, 255))
+        screen.blit(t, t.get_rect(center=FIRE_C))
+        for label, key, c, r in TOUCH_BUTTONS:
+            t = touch_font.render(label, True, (255, 255, 255))
+            screen.blit(t, t.get_rect(center=c))
+        mv = touch_font.render("FLY", True, (180, 255, 245))
+        screen.blit(mv, mv.get_rect(center=(base[0], base[1] + STICK_R + 12)))
+        if game_state == "CAMPAIGN":
+            pygame.draw.rect(screen, (30, 40, 60), TOUCH_MENU, border_radius=6)
+            pygame.draw.rect(screen, (150, 170, 210), TOUCH_MENU, 1, border_radius=6)
+            t = touch_font.render("MENU", True, (220, 230, 255))
+            screen.blit(t, t.get_rect(center=TOUCH_MENU.center))
+
+    def draw_portrait_hint():
+        if MOBILE and _portrait:
+            shade = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            shade.fill((0, 0, 0, 200))
+            screen.blit(shade, (0, 0))
+            t = big_font.render("TURN YOUR PHONE SIDEWAYS", True, (255, 230, 120))
+            screen.blit(t, t.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)))
+
     running = True
     while running:
+        if pygame.time.get_ticks() - last_fit_ms > 500:
+            last_fit_ms = pygame.time.get_ticks()
+            fit_canvas_to_browser()
         mouse_pos = pygame.mouse.get_pos()
         ps_pad_p1 = joysticks[0] if len(joysticks) > 0 else None
         ps_pad_p2 = joysticks[1] if len(joysticks) > 1 else None
 
         for event in pygame.event.get():
+            # Touch screens also send fake mouse events for every finger; fingers are handled below
+            if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION) and getattr(event, "touch", False):
+                continue
+            # Phones whose browser reports taps only as mouse clicks: treat the mouse as a finger
+            if (MOBILE and not touch["finger_seen"] and event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION)
+                    and getattr(event, "button", 1) == 1):
+                if event.type == pygame.MOUSEMOTION and not event.buttons[0]:
+                    continue
+                ftype = {pygame.MOUSEBUTTONDOWN: pygame.FINGERDOWN, pygame.MOUSEBUTTONUP: pygame.FINGERUP,
+                         pygame.MOUSEMOTION: pygame.FINGERMOTION}[event.type]
+                event = pygame.event.Event(ftype, x=event.pos[0] / SCREEN_WIDTH, y=event.pos[1] / SCREEN_HEIGHT,
+                                           finger_id=-1, from_mouse=True)
+            if event.type in (pygame.FINGERDOWN, pygame.FINGERMOTION) and not getattr(event, "from_mouse", False):
+                touch["finger_seen"] = True
+            if event.type == pygame.FINGERDOWN:
+                finger_down(event.x * SCREEN_WIDTH, event.y * SCREEN_HEIGHT, event.finger_id)
+                continue
+            if event.type == pygame.FINGERMOTION:
+                finger_motion(event.x * SCREEN_WIDTH, event.y * SCREEN_HEIGHT, event.finger_id)
+                continue
+            if event.type == pygame.FINGERUP:
+                finger_up(event.finger_id)
+                continue
+
+            # Mouse: clicking a mode card on the start screen picks that mode
+            if game_state == "MODE_SELECT" and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if CARD1.collidepoint(event.pos):
+                    post_key(pygame.K_1)
+                elif CARD2.collidepoint(event.pos):
+                    post_key(pygame.K_2)
+
+            # Game controller (player 1): using it hides the touch buttons. D-pad left/right = previous/next
+            # level, up = stealth, down = camouflage. Desktop reports the d-pad as a hat, browsers as buttons 12-15.
+            if event.type in (pygame.JOYBUTTONDOWN, pygame.JOYHATMOTION, pygame.JOYAXISMOTION) and getattr(event, "joy", 0) == 0:
+                if event.type != pygame.JOYAXISMOTION or abs(event.value) > 0.5:
+                    touch["on"] = False
+            if game_state in ("CAMPAIGN", "DUEL"):
+                dpad = None
+                if event.type == pygame.JOYHATMOTION and event.joy == 0:
+                    hx, hy = event.value
+                    dpad = {(-1, 0): "left", (1, 0): "right", (0, 1): "up", (0, -1): "down"}.get((hx, hy))
+                elif event.type == pygame.JOYBUTTONDOWN and event.joy == 0 and sys.platform == "emscripten":
+                    dpad = {12: "up", 13: "down", 14: "left", 15: "right"}.get(event.button)
+                if dpad == "up":
+                    post_key(pygame.K_v)
+                elif dpad == "down":
+                    post_key(pygame.K_c)
+                elif dpad == "left" and game_state == "CAMPAIGN":
+                    post_key(pygame.K_p)
+                elif dpad == "right" and game_state == "CAMPAIGN":
+                    post_key(pygame.K_n)
+
             if event.type == pygame.QUIT:
                 running = False
 
@@ -1148,8 +1420,12 @@ async def main():
                 screen.blit(font.render(ln, True, col), (425, y_c2))
                 y_c2 += 22
 
-            pad_msg = "PlayStation Gamepad Connected" if ps_pad_p1 else "Keyboard Connected"
+            pad_msg = "Game Controller Connected" if ps_pad_p1 else ("Touch Screen" if touch["on"] else "Keyboard Connected")
             screen.blit(font.render(f"Controller: {pad_msg} | Esc to Switch Modes", True, (160, 170, 190)), (SCREEN_WIDTH // 2 - 190, 505))
+            if touch["on"]:
+                hint = big_font.render("TAP A CARD TO PLAY", True, (100, 255, 150))
+                screen.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, 540)))
+            draw_portrait_hint()
 
             pygame.display.flip()
             clock.tick(60)
@@ -1187,7 +1463,8 @@ async def main():
                 col = (255, 230, 120) if fp[4] > 26 else ((255, 140, 20) if fp[4] > 16 else (90, 90, 95))
                 pygame.draw.circle(screen, col, (int(fp[0]), int(fp[1])), max(2, (40 - fp[4]) // 4))
             if crash["phase"] == "fall":
-                wreck = pygame.transform.scale(create_jet_sprite(False, (255, 90, 0)), (72 * scale, 60 * scale))
+                wf = jet_size_factor(crash["y"])
+                wreck = pygame.transform.scale(create_jet_sprite(False, (255, 90, 0)), (int(144 * wf), int(120 * wf)))
                 wreck = pygame.transform.rotate(wreck, crash["rot"])
                 screen.blit(wreck, wreck.get_rect(center=(crash["x"], crash["y"])))
             else:
@@ -1300,6 +1577,8 @@ async def main():
 
             in_x = (1 if (keys[pygame.K_d] or pad_x > 0.3) else 0) - (1 if (keys[pygame.K_a] or pad_x < -0.3) else 0)
             in_y = (1 if (keys[pygame.K_s] or pad_y > 0.3) else 0) - (1 if (keys[pygame.K_w] or pad_y < -0.3) else 0)
+            if touch["stick_id"] is not None and math.hypot(*touch["vec"]) > 0.2:
+                in_x, in_y = touch["vec"]          # thumb stick: fly where the thumb points
             old_head = math.atan2(p1_vy, p1_vx)
             if in_x or in_y:
                 # manual: fly where the keys point, with a little momentum
@@ -1334,7 +1613,7 @@ async def main():
                 p1_vy = -p1_vy * 0.5
 
             pad_guard = ps_pad_p1 and (ps_pad_p1.get_button(4) or ps_pad_p1.get_button(9) or ps_pad_p1.get_axis(4) > 0.3)
-            if (keys[pygame.K_e] or pad_guard) and p1_guard_energy > 5.0:
+            if (keys[pygame.K_e] or pad_guard or touch["shield_ids"]) and p1_guard_energy > 5.0:
                 p1_guard = True
                 p1_guard_energy -= 0.6
             else:
@@ -1347,19 +1626,25 @@ async def main():
 
             if math.hypot(pad_aim_x, pad_aim_y) > 0.3:
                 p1_aim_angle = math.atan2(pad_aim_y, pad_aim_x)
+            elif touch["on"]:
+                # phone: no mouse, so FIRE aims itself (nearest missile, else a launcher, else straight ahead)
+                tgt = touch_aim_target(center_p1_x, center_p1_y)
+                p1_aim_angle = math.atan2(tgt[1] - center_p1_y, tgt[0] - center_p1_x) if tgt else math.atan2(p1_vy, p1_vx)
             else:
                 p1_aim_angle = math.atan2(mouse_pos[1] - center_p1_y, mouse_pos[0] - center_p1_x)
 
             pad_shoot = ps_pad_p1 and (ps_pad_p1.get_button(0) or ps_pad_p1.get_button(5) or (ps_pad_p1.get_numaxes() > 5 and ps_pad_p1.get_axis(5) > 0.3))
             current_wpn = WEAPON_TIERS[p1_power_tier]
             on_level_bar = game_state == "CAMPAIGN" and mouse_pos[1] >= LEVEL_BAR_TOP   # clicking the strip doesn't shoot
-            is_firing = ((mouse_buttons[0] and not on_level_bar) or keys[pygame.K_SPACE] or pad_shoot) and not p1_guard
+            mouse_fire = mouse_buttons[0] and not on_level_bar and not touch["on"]   # a finger is not a mouse
+            is_firing = (mouse_fire or touch["fire_ids"] or keys[pygame.K_SPACE] or pad_shoot) and not p1_guard
 
             # Calculate positions for the 3 jets when the squad is active
             jet_squad_origins = [(center_p1_x, center_p1_y)]
             if p1_split_timer > 0:
-                jet_squad_origins.append((center_p1_x - 45, center_p1_y - 45))
-                jet_squad_origins.append((center_p1_x - 45, center_p1_y + 45))
+                w_off = 72 * jet_size_factor(center_p1_y)
+                jet_squad_origins.append((center_p1_x - w_off, center_p1_y - w_off))
+                jet_squad_origins.append((center_p1_x - w_off, center_p1_y + w_off))
 
             if current_wpn["type"] == "laser" and is_firing:
                 p1_laser_active = True
@@ -1465,7 +1750,7 @@ async def main():
                 if e.is_burrowed or e.launch_delay > 0 or p1_hp <= 0 or p1_stealth_timer > 0:
                     continue
                 ex, ey = e.x + e.width / 2, e.y + e.height / 2
-                if math.hypot(ex - jet_cx, ey - jet_cy) > FUSE_RADIUS * (1.4 if e.is_boss else 1.0):
+                if math.hypot(ex - jet_cx, ey - jet_cy) > jet_fuse_radius(jet_cy) * (1.4 if e.is_boss else 1.0):
                     continue
                 campaign_enemies.remove(e)
                 blasts.append([ex, ey, 0, 1.6 if e.is_boss else 1.0])
@@ -1594,7 +1879,7 @@ async def main():
             # Against a raised shield it blows itself up for nothing, and the jet wins the round.
             p2_hitbox = pygame.Rect(p2_x + 10, p2_y + 10, 70, 45)
             if p2_hp > 0 and p1_hp > 0 and not p2_is_burrowed and p1_stealth_timer == 0 and \
-                    math.hypot(p2_x + 40 - center_p1_x, p2_y + 25 - center_p1_y) < FUSE_RADIUS:
+                    math.hypot(p2_x + 40 - center_p1_x, p2_y + 25 - center_p1_y) < jet_fuse_radius(center_p1_y):
                 blasts.append([p2_x + 40, p2_y + 25, 0, 1.0])
                 SFX.snd_explode.play()
                 if p1_guard:
@@ -1643,7 +1928,8 @@ async def main():
 
             # Draw clone jets' lasers if the squad is active
             if p1_split_timer > 0:
-                for ox, oy in [(center_p1_x - 45, center_p1_y - 45), (center_p1_x - 45, center_p1_y + 45)]:
+                w_off = 72 * jet_size_factor(center_p1_y)
+                for ox, oy in [(center_p1_x - w_off, center_p1_y - w_off), (center_p1_x - w_off, center_p1_y + w_off)]:
                     lex = ox + math.cos(p1_aim_angle) * 900
                     ley = oy + math.sin(p1_aim_angle) * 900
                     pygame.draw.line(screen, wpn["color_outer"], (ox, oy), (lex, ley), wpn["beam_w"] + 4)
@@ -1653,7 +1939,7 @@ async def main():
         for dec in active_decoys:
             alpha = 130 + int(math.sin(dec["life"] * 0.2) * 50)
             if dec["type"] == "p1":
-                h_surf = pygame.transform.scale(create_jet_sprite(True, (0, 240, 255), alpha=alpha), (72 * scale, 60 * scale))
+                h_surf = pygame.transform.scale(create_jet_sprite(True, (0, 240, 255), alpha=alpha), (int(144 * JET_BASE_SCALE), int(120 * JET_BASE_SCALE)))
                 screen.blit(h_surf, (dec["x"], dec["y"]))
                 pygame.draw.circle(screen, (0, 240, 255), (int(dec["x"] + 36), int(dec["y"] + 30)), 45, 1)
             else:
@@ -1686,8 +1972,11 @@ async def main():
         bank = max(-1.1, min(1.1, p1_turn_rate * 14)) + autopilot["roll"]
         wing_scale = max(0.18, abs(math.cos(bank)))
 
+        jet_f = jet_size_factor(center_p1_y)
+        wing_off = 72 * jet_f            # wingmen fly half a jet-length behind and to the sides
+
         def flying_jet(surf):
-            sq = pygame.transform.scale(surf, (72 * scale, max(8, int(60 * scale * wing_scale))))
+            sq = pygame.transform.scale(surf, (int(144 * jet_f), max(6, int(120 * jet_f * wing_scale))))
             return pygame.transform.rotate(sq, -math.degrees(jet_heading))
 
         s_surf = create_jet_sprite(p1_guard, WEAPON_TIERS[p1_power_tier]["color_outer"], alpha=camo_alpha)
@@ -1698,17 +1987,17 @@ async def main():
             # Draw the 2 orbiting Combat Clones if Split Active
             if p1_split_timer > 0:
                 c1_img = flying_jet(create_jet_sprite(False, (255, 215, 60), alpha=min(210, camo_alpha)))
-                screen.blit(c1_img, c1_img.get_rect(center=(center_p1_x - 45, center_p1_y - 45)))
-                screen.blit(c1_img, c1_img.get_rect(center=(center_p1_x - 45, center_p1_y + 45)))
-                pygame.draw.line(screen, (255, 215, 60), (center_p1_x, center_p1_y), (center_p1_x - 45, center_p1_y - 45), 1)
-                pygame.draw.line(screen, (255, 215, 60), (center_p1_x, center_p1_y), (center_p1_x - 45, center_p1_y + 45), 1)
+                screen.blit(c1_img, c1_img.get_rect(center=(center_p1_x - wing_off, center_p1_y - wing_off)))
+                screen.blit(c1_img, c1_img.get_rect(center=(center_p1_x - wing_off, center_p1_y + wing_off)))
+                pygame.draw.line(screen, (255, 215, 60), (center_p1_x, center_p1_y), (center_p1_x - wing_off, center_p1_y - wing_off), 1)
+                pygame.draw.line(screen, (255, 215, 60), (center_p1_x, center_p1_y), (center_p1_x - wing_off, center_p1_y + wing_off), 1)
 
             if p1_guard:
-                pygame.draw.circle(screen, (0, 220, 255), (int(center_p1_x), int(center_p1_y)), 52, 3)
+                pygame.draw.circle(screen, (0, 220, 255), (int(center_p1_x), int(center_p1_y)), int(jet_fuse_radius(center_p1_y)), 3)
 
             p1_aim = p1_aim_angle if 'p1_aim_angle' in locals() else 0.0
             pygame.draw.line(screen, WEAPON_TIERS[p1_power_tier]["color_outer"], (center_p1_x, center_p1_y),
-                             (center_p1_x + math.cos(p1_aim) * 35, center_p1_y + math.sin(p1_aim) * 35), 3)
+                             (center_p1_x + math.cos(p1_aim) * 70 * jet_f, center_p1_y + math.sin(p1_aim) * 70 * jet_f), 3)
 
         # Draw Player 2 or Campaign Enemies
         if game_state == "CAMPAIGN":
@@ -1792,6 +2081,10 @@ async def main():
             screen.blit(p2_head, (SCREEN_WIDTH - p2_head.get_width() - 20, 12))
             screen.blit(p2_num, (SCREEN_WIDTH - p2_num.get_width() - 20, 30))
             screen.blit(p2_sub, (SCREEN_WIDTH - p2_sub.get_width() - 20, 56))
+
+        if touch["on"] and game_state in ("CAMPAIGN", "DUEL") and p1_hp > 0:
+            draw_touch_controls()
+        draw_portrait_hint()
 
         pygame.display.flip()
         clock.tick(60)

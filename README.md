@@ -22,6 +22,18 @@ and every few levels the missiles get faster, tougher and smarter.
 | N / P, or click the level strip | Next / previous level |
 | Esc | Back to the mode menu |
 
+**Phone / tablet** (turn it sideways): drag your thumb on the left half to fly, hold **FIRE** (it aims
+itself at the nearest missile, else a launcher), hold **SHIELD**, tap **STEALTH**, **CAMO**, **FLARES**,
+**SQUAD**, **HEAL**; tap a mode card to start, tap a level number to jump, **MENU** goes back.
+Phones are detected automatically (add `?mobile` to the link to force it).
+
+**Game controller**: left stick flies, right stick aims, Cross/A or R1 fires, L1 shield, Triangle flares,
+Share camouflage; d-pad up = stealth, down = camouflage, left/right = previous/next level.
+Using a controller hides the touch buttons.
+
+The jet is drawn smaller the higher it flies (further from the launchers), and the missiles'
+detonation distance shrinks with it.
+
 Modes: **1P Campaign** (jet vs AI missiles, levels 1-100, then endless overdrive) and **2P Duel**
 (player 1 flies the jet, player 2 flies a hypersonic missile with no guns that wins by ramming the jet).
 
