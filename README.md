@@ -23,7 +23,10 @@ and every few levels the missiles get faster, tougher and smarter.
 | R / right click | Launch the selected ordnance |
 | X | FLIR pod: scan the ground for hidden silos (from level 10) |
 | N / P, or click the level strip | Next / previous level |
+| Enter / Pause | Pause and resume |
 | Esc | Back to the mode menu |
+| Start screen: J / K / H | Jet AUTO-MANUAL / duel missile AUTO-MANUAL / AI EASY-NORMAL |
+| Start screen: 3 | Continue the campaign from your best level |
 
 **Phone / tablet** (turn it sideways): drag your thumb on the left half to fly, hold **FIRE** (it aims
 itself at the nearest missile, else a launcher), hold **SHIELD**, tap **STEALTH**, **CAMO**, **FLARES**,
@@ -33,7 +36,8 @@ Phones are detected automatically (add `?mobile` to the link to force it).
 **Game controller**: left stick flies, right stick aims, Cross/A or R1 fires, L1 shield, Triangle flares,
 Share camouflage; d-pad up = stealth, down = camouflage, left/right = previous/next level.
 Ordnance button (R2 in the browser, Start on desktop): tap = launch the selected ordnance; hold it and
-press d-pad left/right = previous/next ordnance, d-pad up = FLIR pod on/off.
+press d-pad left/right = previous/next ordnance, d-pad up = FLIR pod on/off, d-pad down = pause (any
+button resumes). On the start screen: Square / Triangle / L1 change the three switches, R1 continues.
 Using a controller hides the touch buttons.
 
 The jet is drawn smaller the higher it flies (further from the launchers), and the missiles'
@@ -76,6 +80,8 @@ Modes: **1P Campaign** (jet vs AI missiles, levels 1-100, then endless overdrive
 - Control modes on the start screen: **JET AUTO / MANUAL** (AUTO: autopilot + guns that aim and fire by
   themselves; MANUAL: you fly and shoot everything) and **DUEL MISSILE AUTO / MANUAL** (AUTO: the computer
   flies player 2's missile). Keys J / K. On phones the duel is always you vs the AI.
+- AI difficulty on the start screen: **EASY** (slower, simpler missiles and drones) or **NORMAL**.
+- Hints appear once when a new feature unlocks; the campaign card can continue from your best level.
 - All weapon and launcher names are the game's own "-M" versions (for example R-77-M, PATRIOT PAC-3-M).
 - When the jet is brought down it falls burning and explodes on the ground; a fresh jet with full HP
   starts the next round.

@@ -280,12 +280,41 @@ def test_drone_launcher_sends_its_drones_and_one_missile():
 
 def test_control_modes_toggle_and_are_remembered(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "SAVE_FILE", tmp_path / "save.json")
-    assert main.load_control_modes() == {"jet": "AUTO", "missile": "MANUAL"}     # defaults: today's behaviour
+    assert main.load_control_modes() == {"jet": "AUTO", "missile": "MANUAL", "difficulty": "NORMAL"}   # defaults
     assert main.toggle_mode("AUTO") == "MANUAL" and main.toggle_mode("MANUAL") == "AUTO"
-    main.save_control_modes({"jet": "MANUAL", "missile": "AUTO"})
+    assert main.toggle_mode("NORMAL") == "EASY" and main.toggle_mode("EASY") == "NORMAL"
+    main.save_control_modes({"jet": "MANUAL", "missile": "AUTO", "difficulty": "EASY"})
     main.update_save_data(500, 3)                                              # score saving keeps the modes
-    assert main.load_control_modes() == {"jet": "MANUAL", "missile": "AUTO"}
+    assert main.load_control_modes() == {"jet": "MANUAL", "missile": "AUTO", "difficulty": "EASY"}
     assert main.load_save_data()["high_score"] == 500
+
+
+def test_easy_ai_is_slower_and_duller_but_never_turns_faster():
+    n = main.MissileEnemy(30, launch_x=400, ground_y=540)
+    e = main.MissileEnemy(30, launch_x=400, ground_y=540, difficulty="EASY")
+    assert e.speed_stat < n.speed_stat and e.turn_rate < n.turn_rate <= main.MISSILE_TURN_PER_FRAME
+    assert e.fuse_factor < n.fuse_factor == 1.0
+    easy, normal = main.difficulty_factors("EASY"), main.difficulty_factors("NORMAL")
+    assert easy["duel_sees"] < normal["duel_sees"] and not easy["duel_burrow"] and normal["duel_lead"]
+    assert main.difficulty_factors("???") == normal
+
+
+def test_first_time_hints_show_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "SAVE_FILE", tmp_path / "save.json")
+    assert main.hints_due(4, []) == []
+    assert [h[0] for h in main.hints_due(12, [])] == ["ordnance", "flir"]
+    main.mark_hint_seen("ordnance")
+    seen = main.load_save_data()["hints_seen"]
+    assert [h[0] for h in main.hints_due(12, seen)] == ["flir"]
+    for h in main.HINTS:
+        assert set(h[2]) == {"keys", "touch", "pad"}
+
+
+def test_level_1_drone_launchers_carry_no_missile():
+    dl = main.DroneLauncher(200, drones=1, first_delay=1, missile_delay=1, has_missile=False)
+    missiles = sum(dl.update()[1] for _ in range(1000))
+    assert missiles == 0 and not dl.pending
+    assert main.DRONE_MISSILE_LEVEL == 5
 
 
 def test_missile_gives_up_after_20_seconds_and_falls():

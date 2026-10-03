@@ -107,6 +107,20 @@ Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2
   "includes jet also"): every weapon/launcher name in `ARSENAL` (and the generic IR seeker) ends in "-M" (R-77-M,
   PATRIOT PAC-3-M, ...). Never show a real system's exact name; new weapons, missiles, drones or jets get "-M" too.
   The jet has no real name (shown as "JET"). Test: `test_arsenal_has_2_launchers_and_2_munitions_per_nation_and_is_json`.
+- **Improvements batch** (user, 2026-10-03: "do all 7"; "keep manual vs AI as simple as possible and more cognitive"):
+  - Drone launchers carry their missile only from `DRONE_MISSILE_LEVEL` 5 (level 1 stays calm).
+  - AI difficulty EASY / NORMAL (start-screen switch, H, controller L1 on the start screen; saved). `DIFFICULTY_FACTORS`:
+    NORMAL = the tuned game (duel AI also leads the jet: aims where it will be); EASY = slower, wider-turning
+    missiles, smaller fuse, slower/weaker/sparser drones, duel AI sees 25% of shots, no burrow, no lead.
+    Never touches the player's stats. Applies to new missiles/waves (mid-wave switch = next wave).
+  - Start screen: three switches (JET / DUEL MISSILE / AI) + one plain-words line saying what they mean right now.
+  - Pause: Enter / Pause key, touch PAUSE (top centre), controller hold button 7 + d-pad down; any button / tap resumes;
+    Esc still goes to the menu. While paused the loop only redraws the frozen frame.
+  - First-time hints (`HINTS`, `hints_due`, `mark_hint_seen`): once ever, at level 5 (ordnance) and 10 (FLIR),
+    worded for keys / touch / controller (`input_kind`). Saved in save.json `hints_seen`.
+  - Continue: campaign card button "CONTINUE FROM LEVEL N" (best level reached), key 3, controller R1.
+  - Phone speed: touch layer cached (`touch_cache`, redrawn only when its state changes), FLIR cone on a small
+    surface, `create_jet_sprite` memoised (lru_cache; callers must only scale/rotate copies, never draw on it).
 - **Online 1v1 / 2v2: later** (user, 2026-10-03: "keep online 1vs1,2vs2 for future"). Not built. Plan when asked:
   server-authoritative simulation at 60 Hz, clients send inputs only, server sends snapshots at 20 Hz, clients
   interpolate 100 ms behind and predict their own jet; symmetric rules (`human_buff` = 1.0).

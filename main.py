@@ -1,5 +1,6 @@
 import array
 import asyncio
+import functools
 import json
 import math
 from pathlib import Path
@@ -110,16 +111,35 @@ def update_save_data(score: int, level: int):
 CONTROL_MODES = ("AUTO", "MANUAL")
 
 
+DIFFICULTIES = ("NORMAL", "EASY")
+
+# AI DIFFICULTY (user, 2026-10-03): EASY / NORMAL for the computer side (campaign missiles, drones, duel AI missile).
+# NORMAL is the game as tuned before; EASY slows and dulls the AI. Never changes the player's own stats.
+DIFFICULTY_FACTORS = {
+    "NORMAL": {"missile_speed": 1.0, "missile_turn": 1.0, "fuse": 1.0, "drone_speed": 1.0, "drone_dmg": 1.0,
+               "drone_gap": 1.0, "duel_sees": 0.6, "duel_speed": 1.0, "duel_burrow": True, "duel_lead": True},
+    "EASY":   {"missile_speed": 0.8, "missile_turn": 0.75, "fuse": 0.85, "drone_speed": 0.8, "drone_dmg": 0.7,
+               "drone_gap": 1.4, "duel_sees": 0.25, "duel_speed": 0.8, "duel_burrow": False, "duel_lead": False},
+}
+
+
+def difficulty_factors(d: str) -> dict:
+    return DIFFICULTY_FACTORS.get(d, DIFFICULTY_FACTORS["NORMAL"])
+
+
 def load_control_modes() -> dict:
     data = load_save_data()
     jet = data.get("jet_mode", "AUTO")
     missile = data.get("missile_mode", "MANUAL")
-    return {"jet": jet if jet in CONTROL_MODES else "AUTO", "missile": missile if missile in CONTROL_MODES else "MANUAL"}
+    diff = data.get("difficulty", "NORMAL")
+    return {"jet": jet if jet in CONTROL_MODES else "AUTO", "missile": missile if missile in CONTROL_MODES else "MANUAL",
+            "difficulty": diff if diff in DIFFICULTIES else "NORMAL"}
 
 
 def save_control_modes(modes: dict):
     data = load_save_data()
     data["jet_mode"], data["missile_mode"] = modes["jet"], modes["missile"]
+    data["difficulty"] = modes.get("difficulty", "NORMAL")
     try:
         with open(SAVE_FILE, "w") as f:
             json.dump(data, f, indent=2)
@@ -128,7 +148,37 @@ def save_control_modes(modes: dict):
 
 
 def toggle_mode(m: str) -> str:
-    return "MANUAL" if m == "AUTO" else "AUTO"
+    return {"AUTO": "MANUAL", "MANUAL": "AUTO", "EASY": "NORMAL", "NORMAL": "EASY"}[m]
+
+
+# FIRST-TIME HINTS (user, 2026-10-03): shown once ever (remembered in save.json) when a feature unlocks.
+# Each: (id, level, {"keys": ..., "touch": ..., "pad": ...}) -- the text matches how the player is playing.
+HINTS = [
+    ("ordnance", 5, {"keys": "NEW: nation weapons! R or right click launches, G picks the next one",
+                     "touch": "NEW: nation weapons! Tap MSL to launch, WPN to pick the next one",
+                     "pad": "NEW: nation weapons! Tap button 7 to launch, hold it + d-pad left/right to pick"}),
+    ("flir", 10, {"keys": "NEW: hidden silos! Press X: the FLIR pod scans the ground below you",
+                  "touch": "NEW: hidden silos! Tap FLIR: the pod scans the ground below you",
+                  "pad": "NEW: hidden silos! Hold button 7 + d-pad up: the FLIR pod scans below you"}),
+]
+HINT_FRAMES = 330
+
+
+def hints_due(level: int, seen) -> list:
+    """Hints whose feature is unlocked at this level and that the player has never been shown."""
+    return [h for h in HINTS if level >= h[1] and h[0] not in seen]
+
+
+def mark_hint_seen(hint_id: str):
+    data = load_save_data()
+    seen = set(data.get("hints_seen", []))
+    seen.add(hint_id)
+    data["hints_seen"] = sorted(seen)
+    try:
+        with open(SAVE_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
 
 
 # ==============================================================================
@@ -203,6 +253,7 @@ def jet_hits_ground(center_y: float, ground_y: float) -> bool:
     return center_y >= ground_y - JET_GROUND_CLEARANCE
 
 
+@functools.lru_cache(maxsize=64)   # drawn every frame: build each look once, then reuse it (callers only scale/rotate copies)
 def create_jet_sprite(tail_flag: bool = False, aura_color=None, alpha: int = 255) -> pygame.Surface:
     """The player's stealth fighter (F-35-M style, own design, no real markings).
     Top-down view, nose pointing right. tail_flag = shield/glow outline; aura_color
@@ -413,7 +464,8 @@ class MissileEnemy:
     explodes. Missiles never fire: they hit or blow up next to the jet."""
 
     def __init__(self, level: int, is_boss: bool = False, mutator: str = "NONE",
-                 launch_x: float = None, ground_y: int = 600, launch_delay: int = 0, system: dict = None):
+                 launch_x: float = None, ground_y: int = 600, launch_delay: int = 0, system: dict = None,
+                 difficulty: str = "NORMAL"):
         self.is_boss = is_boss
         # launcher system it was fired from (nation arsenal, level 5+): own trail colour and speed
         self.system = system
@@ -460,6 +512,10 @@ class MissileEnemy:
         self.pace = missile_pace(level)        # slow at level 1, one step faster every 5 levels
         self.speed_stat = stats["speed"] * self.pace * speed_mult * boss_mult * (system.get("speed", 1.0) if system else 1.0)
         self.turn_rate = MISSILE_TURN_PER_FRAME   # 30 degrees per second, every class (user, 2026-10-03)
+        df = difficulty_factors(difficulty)       # EASY: slower, wider-turning missiles (never above 30 deg/s)
+        self.speed_stat *= df["missile_speed"]
+        self.turn_rate *= df["missile_turn"]
+        self.fuse_factor = df["fuse"]             # EASY: has to get closer before its fuse fires
         self.expired = False                      # 20 s of flight used up: falling to the ground
         self.vx = self.vy = 0.0                   # velocity while falling as a spent projectile
         self.power = level_power(level)        # missile damage grows with level, same curve as the jet
@@ -854,6 +910,7 @@ class SiloLauncher:
 # the shield E blocks it). The jet's protective AUTO-GUN fires by itself at drones inside its range.
 # ==============================================================================
 DRONE_MAX_LEVEL = 20
+DRONE_MISSILE_LEVEL = 5      # drone launchers carry their missile only from level 5 (keeps level 1 calm)
 DRONE_LAUNCHER_MAX = 10
 DRONE_SPEED_FACTOR = 0.5                         # half the jet's top speed
 DRONE_TURN_PER_FRAME = math.radians(60) / 60     # 60 degrees per second
@@ -898,7 +955,7 @@ class Drone:
     """A subsonic homing drone: climbs off its launcher, then flies at a steady speed toward its target,
     turning at most 60 deg/s. After DRONE_LIFE frames its engine stops and it glides down to the ground."""
 
-    def __init__(self, x: float, y: float, speed: float, level: int):
+    def __init__(self, x: float, y: float, speed: float, level: int, dmg_factor: float = 1.0):
         self.x, self.y = x, y
         self.heading = -math.pi / 2
         self.speed = speed
@@ -906,7 +963,7 @@ class Drone:
         self.expired = False
         self.vx = self.vy = 0.0
         self.level = drone_level(level)
-        self.dmg = int(DRONE_HIT_DMG * level_power(level))
+        self.dmg = int(DRONE_HIT_DMG * level_power(level) * dmg_factor)
 
     @property
     def velocity(self):
@@ -949,11 +1006,13 @@ class DroneLauncher:
     """Fixed ground launcher for drones, with 1 missile on board too. Launches its drones one by one
     (holds while the jet is in stealth); 2 hits destroy it."""
 
-    def __init__(self, x: float, drones: int, first_delay: int, missile_delay: int):
+    def __init__(self, x: float, drones: int, first_delay: int, missile_delay: int, has_missile: bool = True,
+                 gap: float = 1.0):
         self.x = x
         self.drones_left = drones
         self.timer = first_delay
-        self.shots = 1                 # its missile ("shots" so a missile that falls gives it back, like a silo)
+        self.gap = gap                 # EASY: longer wait between drones
+        self.shots = 1 if has_missile else 0   # its missile (from level 5) ("shots" so a missile that falls gives it back, like a silo)
         self.missile_timer = missile_delay
         self.alive = True
         self.hp = self.max_hp = 2
@@ -973,7 +1032,7 @@ class DroneLauncher:
             self.timer -= 1
             if self.timer <= 0:
                 self.drones_left -= 1
-                self.timer = random.randint(150, 240)
+                self.timer = int(random.randint(150, 240) * self.gap)
                 drone = True
         if self.shots > 0 and not hold_missile:
             self.missile_timer -= 1
@@ -1116,6 +1175,7 @@ async def main():
     total_score = 0
     active_mutator = "NONE"
     saved_data = load_save_data()
+    modes = load_control_modes()   # jet / duel missile AUTO-MANUAL and AI difficulty (needed by the first wave)
 
     break_timer = 0
     break_winner = "P1"
@@ -1263,7 +1323,8 @@ async def main():
     def launch_missile(lvl, site, delay, is_boss=False, flank_angle=None):
         mutator = active_mutator if lvl > 100 else "NONE"
         e = MissileEnemy(lvl, is_boss=is_boss, mutator=mutator, launch_x=launchers[site]["x"],
-                         ground_y=GROUND_Y, launch_delay=delay, system=None if is_boss else launchers[site].get("system"))
+                         ground_y=GROUND_Y, launch_delay=delay, system=None if is_boss else launchers[site].get("system"),
+                         difficulty=modes["difficulty"])
         e.site = site
         e.flank_angle = flank_angle if flank_angle is not None else random.uniform(0, 2 * math.pi)
         return e
@@ -1300,7 +1361,9 @@ async def main():
         for i in range(n):
             x = (i + 0.5) * SCREEN_WIDTH / n + random.uniform(-12, 12)
             drone_launchers.append(DroneLauncher(x, drones_per_launcher(lvl), first_delay=90 + i * 45 + random.randint(0, 60),
-                                                 missile_delay=480 + i * 90 + random.randint(0, 180)))
+                                                 missile_delay=480 + i * 90 + random.randint(0, 180),
+                                                 has_missile=lvl >= DRONE_MISSILE_LEVEL,
+                                                 gap=difficulty_factors(modes["difficulty"])["drone_gap"]))
 
     def spawn_silos(lvl):
         silos.clear()
@@ -1611,12 +1674,15 @@ async def main():
         h = GROUND_Y - cy
         if h <= 0:
             return
-        half = math.tan(FLIR_HALF_ANGLE) * min(h, FLIR_RANGE)
-        cone = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        bottom = cy + min(h, FLIR_RANGE)
-        pygame.draw.polygon(cone, (120, 255, 140, 40), [(cx, cy), (cx - half, bottom), (cx + half, bottom)])
-        pygame.draw.polygon(cone, (120, 255, 140, 120), [(cx, cy), (cx - half, bottom), (cx + half, bottom)], 1)
-        screen.blit(cone, (0, 0))
+        depth = min(h, FLIR_RANGE)
+        half = math.tan(FLIR_HALF_ANGLE) * depth
+        # drawn on a surface just the cone's size (not the whole screen): much cheaper on phones
+        w, hh = int(half * 2) + 2, int(depth) + 2
+        cone = pygame.Surface((w, hh), pygame.SRCALPHA)
+        pts = [(w / 2, 0), (1, depth), (w - 1, depth)]
+        pygame.draw.polygon(cone, (120, 255, 140, 40), pts)
+        pygame.draw.polygon(cone, (120, 255, 140, 120), pts, 1)
+        screen.blit(cone, (cx - w / 2, cy))
 
     campaign_enemies = spawn_campaign_wave(current_level)
     p1_bullets = []
@@ -1660,6 +1726,7 @@ async def main():
         p1_split_timer = 0
 
         update_save_data(total_score, current_level)
+        saved_data.update(load_save_data())      # keeps "continue from level N" up to date
 
         wins = p1_wins if winner == "P1" else p2_wins
         is_5th_milestone = False
@@ -1768,9 +1835,11 @@ async def main():
     TOUCH_MENU = pygame.Rect(SCREEN_WIDTH - 74, 32, 62, 24)
     CARD1 = pygame.Rect(55, 150, 335, 325)
     CARD2 = pygame.Rect(410, 150, 335, 325)
-    MODE_JET_BTN = pygame.Rect(55, 482, 335, 22)       # start screen: JET MANUAL / AUTO
-    MODE_MSL_BTN = pygame.Rect(410, 482, 335, 22)      # start screen: MISSILE MANUAL / AUTO
-    modes = load_control_modes()
+    MODE_JET_BTN = pygame.Rect(55, 482, 223, 22)       # start screen: JET MANUAL / AUTO
+    MODE_MSL_BTN = pygame.Rect(288, 482, 224, 22)      # start screen: DUEL MISSILE MANUAL / AUTO
+    MODE_DIFF_BTN = pygame.Rect(522, 482, 223, 22)     # start screen: AI EASY / NORMAL
+    CONTINUE_BTN = pygame.Rect(75, 436, 295, 26)       # inside the campaign card: continue from the best level
+    TOUCH_PAUSE = pygame.Rect(SCREEN_WIDTH // 2 - 31, 80, 62, 24)
     if MOBILE:
         modes["missile"] = "AUTO"   # phones: always player vs AI (user, 2026-10-03), no second human player
 
@@ -1786,12 +1855,26 @@ async def main():
         save_control_modes(modes)
         SFX.snd_hit.play()
         if game_state in ("CAMPAIGN", "DUEL"):
-            floating_texts.append([f"{which.upper()}: {modes[which]}", SCREEN_WIDTH // 2 - 50, 230, (255, 230, 120), 50])
+            name = {"jet": "JET", "missile": "DUEL MISSILE", "difficulty": "AI"}[which]
+            floating_texts.append([f"{name}: {modes[which]}", SCREEN_WIDTH // 2 - 50, 230, (255, 230, 120), 50])
+            if which == "difficulty" and game_state == "CAMPAIGN":
+                floating_texts.append(["(from the next wave)", SCREEN_WIDTH // 2 - 70, 250, (200, 200, 210), 50])
     touch_font = pygame.font.SysFont("consolas", 12, bold=True)
     touch_big = pygame.font.SysFont("consolas", 20, bold=True)
     last_fit_ms = -1000
     PAD_ORD_BUTTON = 7          # the one controller button no other action uses
     pad_ord = {"down": False, "used": False}
+    pause = {"on": False, "drawn": False}
+    hint = {"text": "", "frames": 0}
+
+    def best_level():
+        return max(1, int(saved_data.get("max_level_reached", 1)))
+
+    def input_kind():
+        """How the player is playing right now, for hint wording."""
+        if touch["on"]:
+            return "touch"
+        return "pad" if joysticks else "keys"
 
     def post_key(k):
         pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=k, mod=0, unicode="", scancode=0))
@@ -1823,12 +1906,19 @@ async def main():
                 post_key(pygame.K_j)
             elif MODE_MSL_BTN.inflate(0, 16).collidepoint(tx, ty):
                 post_key(pygame.K_k)
+            elif MODE_DIFF_BTN.inflate(0, 16).collidepoint(tx, ty):
+                post_key(pygame.K_h)
+            elif CONTINUE_BTN.inflate(0, 10).collidepoint(tx, ty) and best_level() > 1:
+                post_key(pygame.K_3)
             elif CARD1.collidepoint(tx, ty):
                 post_key(pygame.K_1)
             elif CARD2.collidepoint(tx, ty):
                 post_key(pygame.K_2)
             return
         if game_state not in ("CAMPAIGN", "DUEL"):
+            return
+        if pause["on"] or TOUCH_PAUSE.inflate(16, 20).collidepoint(tx, ty):   # PAUSE button / tap to resume
+            post_key(pygame.K_RETURN)
             return
         if game_state == "CAMPAIGN":
             if TOUCH_MENU.inflate(16, 20).collidepoint(tx, ty):
@@ -1876,16 +1966,15 @@ async def main():
             touch["stick_id"] = None
             touch["vec"] = (0.0, 0.0)
 
+    touch_cache = {"key": None, "layer": None}
+
     def draw_touch_controls():
-        ui = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        """Phone controls. The whole layer (circles + labels) is cached and only redrawn when something on it
+        changes (stick moved, a button became ready / held), which saves a full-screen redraw every frame."""
         base = touch["origin"] if touch["stick_id"] is not None else (120, 470)
         knob = (base[0] + touch["vec"][0] * STICK_R, base[1] + touch["vec"][1] * STICK_R)
-        pygame.draw.circle(ui, (0, 229, 212, 45), base, STICK_R)
-        pygame.draw.circle(ui, (0, 229, 212, 170), base, STICK_R, 3)
-        pygame.draw.circle(ui, (0, 229, 212, 190), (int(knob[0]), int(knob[1])), 26)
         firing = bool(touch["fire_ids"])
-        pygame.draw.circle(ui, (255, 70, 70, 235) if firing else (225, 40, 55, 190), FIRE_C, FIRE_R)
-        pygame.draw.circle(ui, (255, 255, 255, 230), FIRE_C, FIRE_R, 4)
+        states = []
         for label, key, c, r in visible_touch_buttons():
             ready = True
             if label == "STEALTH":
@@ -1906,22 +1995,34 @@ async def main():
             elif label == "FLIR":
                 ready = flir["on"] or flir["energy"] > 10
             held = (label == "SHIELD" and bool(touch["shield_ids"])) or (label == "FLIR" and flir["on"])
-            col = (0, 200, 255, 235) if held else ((40, 120, 200, 200) if ready else (60, 65, 80, 160))
-            pygame.draw.circle(ui, col, c, r)
-            pygame.draw.circle(ui, (230, 240, 255, 220), c, r, 2)
-        screen.blit(ui, (0, 0))
-        t = touch_big.render("FIRE", True, (255, 255, 255))
-        screen.blit(t, t.get_rect(center=FIRE_C))
-        for label, key, c, r in visible_touch_buttons():
-            t = touch_font.render(label, True, (255, 255, 255))
-            screen.blit(t, t.get_rect(center=c))
-        mv = touch_font.render("FLY", True, (180, 255, 245))
-        screen.blit(mv, mv.get_rect(center=(base[0], base[1] + STICK_R + 12)))
-        if game_state == "CAMPAIGN":
-            pygame.draw.rect(screen, (30, 40, 60), TOUCH_MENU, border_radius=6)
-            pygame.draw.rect(screen, (150, 170, 210), TOUCH_MENU, 1, border_radius=6)
-            t = touch_font.render("MENU", True, (220, 230, 255))
-            screen.blit(t, t.get_rect(center=TOUCH_MENU.center))
+            states.append((label, c, r, ready, held))
+        key = ((int(base[0]), int(base[1])), (int(knob[0]), int(knob[1])), firing, tuple(states), game_state)
+        if key != touch_cache["key"]:
+            ui = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            pygame.draw.circle(ui, (0, 229, 212, 45), base, STICK_R)
+            pygame.draw.circle(ui, (0, 229, 212, 170), base, STICK_R, 3)
+            pygame.draw.circle(ui, (0, 229, 212, 190), (int(knob[0]), int(knob[1])), 26)
+            pygame.draw.circle(ui, (255, 70, 70, 235) if firing else (225, 40, 55, 190), FIRE_C, FIRE_R)
+            pygame.draw.circle(ui, (255, 255, 255, 230), FIRE_C, FIRE_R, 4)
+            for label, c, r, ready, held in states:
+                col = (0, 200, 255, 235) if held else ((40, 120, 200, 200) if ready else (60, 65, 80, 160))
+                pygame.draw.circle(ui, col, c, r)
+                pygame.draw.circle(ui, (230, 240, 255, 220), c, r, 2)
+            t = touch_big.render("FIRE", True, (255, 255, 255))
+            ui.blit(t, t.get_rect(center=FIRE_C))
+            for label, c, r, ready, held in states:
+                t = touch_font.render(label, True, (255, 255, 255))
+                ui.blit(t, t.get_rect(center=c))
+            mv = touch_font.render("FLY", True, (180, 255, 245))
+            ui.blit(mv, mv.get_rect(center=(base[0], base[1] + STICK_R + 12)))
+            buttons = [(TOUCH_PAUSE, "PAUSE")] + ([(TOUCH_MENU, "MENU")] if game_state == "CAMPAIGN" else [])
+            for rect, text in buttons:
+                pygame.draw.rect(ui, (30, 40, 60, 230), rect, border_radius=6)
+                pygame.draw.rect(ui, (150, 170, 210, 255), rect, 1, border_radius=6)
+                t = touch_font.render(text, True, (220, 230, 255))
+                ui.blit(t, t.get_rect(center=rect.center))
+            touch_cache["key"], touch_cache["layer"] = key, ui
+        screen.blit(touch_cache["layer"], (0, 0))
 
     def draw_portrait_hint():
         if MOBILE and _portrait:
@@ -1965,12 +2066,32 @@ async def main():
                 finger_up(event.finger_id)
                 continue
 
+            # PAUSE (Enter / Pause key, touch PAUSE, controller: hold button 7 + d-pad down): everything freezes.
+            # While paused only resume (the same keys, a tap, any controller button), Esc (menu) and closing work.
+            if event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_PAUSE) and \
+                    game_state in ("CAMPAIGN", "DUEL"):
+                pause["on"], pause["drawn"] = not pause["on"], False
+                continue
+            if pause["on"]:
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    pause["on"] = False                 # goes on to the Esc handler below: back to the menu
+                elif event.type == pygame.JOYBUTTONDOWN:
+                    pause["on"] = False
+                    pad_ord["down"] = False
+                    continue
+                elif event.type != pygame.QUIT:
+                    continue
+
             # Mouse: clicking a mode card on the start screen picks that mode
             if game_state == "MODE_SELECT" and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if MODE_JET_BTN.collidepoint(event.pos):
                     post_key(pygame.K_j)
                 elif MODE_MSL_BTN.collidepoint(event.pos):
                     post_key(pygame.K_k)
+                elif MODE_DIFF_BTN.collidepoint(event.pos):
+                    post_key(pygame.K_h)
+                elif CONTINUE_BTN.collidepoint(event.pos) and best_level() > 1:
+                    post_key(pygame.K_3)
                 elif CARD1.collidepoint(event.pos):
                     post_key(pygame.K_1)
                 elif CARD2.collidepoint(event.pos):
@@ -1982,11 +2103,22 @@ async def main():
                 toggle_control("jet")
             if event.type == pygame.KEYDOWN and event.key == pygame.K_k:
                 toggle_control("missile")
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_h:
+                toggle_control("difficulty")
             if game_state == "MODE_SELECT" and event.type == pygame.JOYBUTTONDOWN and event.joy == 0:
                 if event.button == 2:
                     toggle_control("jet")
                 elif event.button == 3:
                     toggle_control("missile")
+                elif event.button == 4:          # L1: AI difficulty
+                    toggle_control("difficulty")
+                elif event.button == 5 and best_level() > 1:   # R1: continue from the best level
+                    post_key(pygame.K_3)
+            # CONTINUE ('3' on the start screen): the campaign starts at the best level reached
+            if game_state == "MODE_SELECT" and event.type == pygame.KEYDOWN and event.key in (pygame.K_3, pygame.K_KP3) \
+                    and best_level() > 1:
+                jump_to_level(best_level())
+                post_key(pygame.K_1)
 
             # Game controller (player 1): using it hides the touch buttons. D-pad left/right = previous/next
             # level, up = stealth, down = camouflage. Desktop reports the d-pad as a hat, browsers as buttons 12-15.
@@ -2016,6 +2148,8 @@ async def main():
                                                              scancode=0, pad_prev=(dpad == "left")))
                     elif dpad == "up":
                         post_key(pygame.K_x)
+                    elif dpad == "down":
+                        post_key(pygame.K_RETURN)      # pause
                     dpad = None
                 if dpad == "up":
                     post_key(pygame.K_v)
@@ -2187,11 +2321,38 @@ async def main():
 
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 game_state = "MODE_SELECT"
+                saved_data.update(load_save_data())
 
         if game_state == "CAMPAIGN":   # unlock messages from the last wave set-up
             for k, (txt, col) in enumerate(notices):
                 floating_texts.append([txt, max(10, SCREEN_WIDTH // 2 - len(txt) * 4), 250 + k * 22, col, 150])
             notices.clear()
+            if hint["frames"] == 0:    # first-time hint for a newly unlocked feature (once ever)
+                due = hints_due(current_level, saved_data.get("hints_seen", []))
+                if due:
+                    hid = due[0][0]
+                    hint["text"], hint["frames"] = due[0][2][input_kind()], HINT_FRAMES
+                    mark_hint_seen(hid)
+                    saved_data.setdefault("hints_seen", []).append(hid)
+
+        # PAUSED: the last frame stays on screen under a shade; nothing moves
+        if pause["on"] and game_state in ("CAMPAIGN", "DUEL"):
+            if not pause["drawn"]:
+                shade = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                shade.fill((0, 0, 0, 150))
+                screen.blit(shade, (0, 0))
+                t = title_font.render("PAUSED", True, (255, 230, 120))
+                screen.blit(t, t.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 20)))
+                how = {"touch": "TAP TO RESUME", "pad": "PRESS ANY BUTTON TO RESUME"}.get(input_kind(), "ENTER TO RESUME  |  ESC = MENU")
+                t = font.render(how, True, (220, 225, 240))
+                screen.blit(t, t.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 20)))
+                pause["drawn"] = True
+            pygame.display.flip()
+            clock.tick(30)
+            await asyncio.sleep(0)
+            continue
+        if game_state == "MODE_SELECT":
+            pause["on"] = False
 
         draw_world()
 
@@ -2213,22 +2374,28 @@ async def main():
 
             screen.blit(big_font.render("1P CAMPAIGN", True, (255, 180, 80)), (75, 168))
             lines1 = [
-                "Jet vs AI Missile Swarm",
-                "[PLAYER GETS 3X EVERYTHING]:",
-                "- 3x Max HP (345 Health) & Med-Kits",
-                "- Press 'T': SPLIT INTO 3 ATTACK JETS",
-                "- Auto-splits into 3 on Boss Waves!",
-                "- 'F': 10 flares pull the missiles away",
-                "- Continuous Lasers (Press 'L')",
-                "- Past Level 100: Endless Overdrive",
+                "Jet vs AI missiles, drones & silos",
+                "[YOU: 3X POWER, +15% vs AI]:",
+                "- 345+ HP, med-kits, 12 flares (F)",
+                "- Nation weapons every 5 levels (G/R)",
+                "- Drones + auto-gun, silos + FLIR (X)",
+                "- 'T' squad, 'L' lasers, 'V' stealth",
+                "- Levels 1-100, then endless overdrive",
                 "",
                 ">> PRESS '1' OR CROSS (X) <<",
             ]
             y_c1 = 202
             for ln in lines1:
-                col = (100, 255, 150) if ">>" in ln else ((255, 215, 60) if "'T'" in ln or "'L'" in ln or "'F'" in ln else ((255, 220, 100) if "3X" in ln or "SPLIT" in ln else (210, 220, 235)))
+                col = (100, 255, 150) if ">>" in ln else ((255, 220, 100) if "3X" in ln else (210, 220, 235))
                 screen.blit(font.render(ln, True, col), (70, y_c1))
                 y_c1 += 22
+            if best_level() > 1:   # continue the campaign from the best level reached
+                hov = CONTINUE_BTN.collidepoint(mouse_pos) and not touch["on"]
+                pygame.draw.rect(screen, (60, 46, 20) if hov else (40, 32, 16), CONTINUE_BTN, border_radius=6)
+                pygame.draw.rect(screen, (255, 180, 80), CONTINUE_BTN, 1, border_radius=6)
+                key3 = {"touch": "", "pad": "  [R1]"}.get(input_kind(), "  [3]")
+                t = font.render(f"CONTINUE FROM LEVEL {best_level()}{key3}", True, (255, 200, 110))
+                screen.blit(t, t.get_rect(center=CONTINUE_BTN.center))
 
             card2 = pygame.Rect(410, 150, 335, 325)
             pygame.draw.rect(screen, (18, 22, 38), card2, border_radius=12)
@@ -2254,22 +2421,34 @@ async def main():
                 screen.blit(font.render(ln, True, col), (425, y_c2))
                 y_c2 += 22
 
-            # control-mode switches (click / tap, J / K, controller Square / Triangle)
-            for rect, label, mode, keyhint in ((MODE_JET_BTN, "JET", modes["jet"], "J / SQUARE"),
-                                               (MODE_MSL_BTN, "DUEL MISSILE", modes["missile"],
-                                                "ALWAYS AI ON PHONE" if MOBILE else "K / TRIANGLE")):
-                auto = mode == "AUTO"
+            # three simple switches (click / tap, keys J / K / H, controller Square / Triangle / L1)
+            kind = input_kind()
+            keyname = {"keys": ("J", "K", "H"), "pad": ("SQUARE", "TRIANGLE", "L1"), "touch": ("", "", "")}[kind]
+            for rect, label, mode, keyhint, good in (
+                    (MODE_JET_BTN, "JET", modes["jet"], keyname[0], "AUTO"),
+                    (MODE_MSL_BTN, "DUEL MISSILE", modes["missile"], "PHONE" if MOBILE else keyname[1], "AUTO"),
+                    (MODE_DIFF_BTN, "AI", modes["difficulty"], keyname[2], "EASY")):
+                on = mode == good
                 hover = rect.collidepoint(mouse_pos) and not touch["on"]
                 pygame.draw.rect(screen, (40, 52, 80) if hover else (24, 30, 48), rect, border_radius=6)
-                pygame.draw.rect(screen, (100, 255, 150) if auto else (255, 180, 80), rect, 1, border_radius=6)
-                t = font.render(f"{label}: {mode}  [{keyhint}]", True, (100, 255, 150) if auto else (255, 180, 80))
+                pygame.draw.rect(screen, (100, 255, 150) if on else (255, 180, 80), rect, 1, border_radius=6)
+                t = font.render(f"{label}: {mode}" + (f" [{keyhint}]" if keyhint else ""), True,
+                                (100, 255, 150) if on else (255, 180, 80))
                 screen.blit(t, t.get_rect(center=rect.center))
+            # what the switches mean right now, in plain words
+            meaning = "  |  ".join((
+                "autopilot + auto-aim help you" if modes["jet"] == "AUTO" else "you fly & shoot yourself",
+                "duel vs the AI" if modes["missile"] == "AUTO" else "duel vs a friend",
+                "slower, simpler AI" if modes["difficulty"] == "EASY" else "full-strength AI"))
+            t = font.render(meaning, True, (200, 210, 230))
+            screen.blit(t, t.get_rect(center=(SCREEN_WIDTH // 2, 516)))
 
             pad_msg = "Game Controller Connected" if ps_pad_p1 else ("Touch Screen" if touch["on"] else "Keyboard Connected")
-            screen.blit(font.render(f"Controller: {pad_msg} | Esc to Switch Modes", True, (160, 170, 190)), (SCREEN_WIDTH // 2 - 190, 514))
+            t = font.render(f"Controller: {pad_msg} | Esc to Switch Modes", True, (140, 150, 170))
+            screen.blit(t, t.get_rect(center=(SCREEN_WIDTH // 2, 536)))
             if touch["on"]:
-                hint = big_font.render("TAP A CARD TO PLAY", True, (100, 255, 150))
-                screen.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, 550)))
+                tap_hint = big_font.render("TAP A CARD TO PLAY", True, (100, 255, 150))
+                screen.blit(tap_hint, tap_hint.get_rect(center=(SCREEN_WIDTH // 2, 566)))
             draw_portrait_hint()
 
             pygame.display.flip()
@@ -2700,7 +2879,7 @@ async def main():
                 if e.is_burrowed or e.launch_delay > 0 or p1_hp <= 0 or p1_stealth_timer > 0 or getattr(e, "decoyed", False) or e.expired:
                     continue
                 ex, ey = e.x + e.width / 2, e.y + e.height / 2
-                if math.hypot(ex - jet_cx, ey - jet_cy) > jet_fuse_radius(jet_cy) * (1.4 if e.is_boss else 1.0):
+                if math.hypot(ex - jet_cx, ey - jet_cy) > jet_fuse_radius(jet_cy) * (1.4 if e.is_boss else 1.0) * e.fuse_factor:
                     continue
                 campaign_enemies.remove(e)
                 blasts.append([ex, ey, 0, 1.6 if e.is_boss else 1.0])
@@ -2785,7 +2964,7 @@ async def main():
             for s in silos:
                 if s.update(hold=hold_silos):
                     e = MissileEnemy(current_level, mutator=active_mutator if current_level > 100 else "NONE",
-                                     launch_x=s.x, ground_y=GROUND_Y, system=s.system)
+                                     launch_x=s.x, ground_y=GROUND_Y, system=s.system, difficulty=modes["difficulty"])
                     e.silo = s
                     campaign_enemies.append(e)
                     SFX.snd_ignite.play()
@@ -2817,11 +2996,13 @@ async def main():
                 want_drone, want_missile = dl.update(hold=p1_stealth_timer > 0,
                                                      hold_missile=len(campaign_enemies) >= MAX_WAVE_MISSILES)
                 if want_drone:
-                    drones.append(Drone(dl.x, GROUND_Y - 26, drone_speed(top_speed), current_level))
+                    dfx = difficulty_factors(modes["difficulty"])
+                    drones.append(Drone(dl.x, GROUND_Y - 26, drone_speed(top_speed) * dfx["drone_speed"], current_level,
+                                        dmg_factor=dfx["drone_dmg"]))
                     SFX.snd_drone.play()
                 if want_missile:
                     e = MissileEnemy(current_level, mutator=active_mutator if current_level > 100 else "NONE",
-                                     launch_x=dl.x, ground_y=GROUND_Y)
+                                     launch_x=dl.x, ground_y=GROUND_Y, difficulty=modes["difficulty"])
                     e.silo = dl          # if it falls to the ground, this launcher gets the shot back
                     campaign_enemies.append(e)
 
@@ -2920,7 +3101,8 @@ async def main():
                     # the jet (or the nearest flare / where camouflage or stealth left the jet), weaving, and
                     # dives into a nearby hole when the jet's shots come close
                     if modes["missile"] == "AUTO" and not (p2_vx or p2_vy):
-                        ai_fl = [d for d in active_decoys if d["type"] == "flare"]
+                        dfx_duel = difficulty_factors(modes["difficulty"])
+                        ai_fl =[d for d in active_decoys if d["type"] == "flare"]
                         if ai_fl:
                             fl = min(ai_fl, key=lambda d: math.hypot(d["x"] - center_p2_x, d["y"] - center_p2_y))
                             ax, ay = fl["x"], fl["y"]
@@ -2930,21 +3112,26 @@ async def main():
                             ax, ay = p1_camo_x, p1_camo_y
                         else:
                             ax, ay = center_p1_x, center_p1_y
+                            if dfx_duel["duel_lead"]:   # NORMAL thinks ahead: heads for where the jet will be
+                                t_hit = min(60.0, math.hypot(ax - center_p2_x, ay - center_p2_y) / max(1.0, p2_speed))
+                                ax += p1_vx * t_hit * 0.7
+                                ay += p1_vy * t_hit * 0.7
+                        ai_speed = p2_speed * dfx_duel["duel_speed"]
                         a = math.atan2(ay - center_p2_y, ax - center_p2_x) + math.sin(pygame.time.get_ticks() * 0.004) * 0.6
-                        p2_vx, p2_vy = math.cos(a) * p2_speed, math.sin(a) * p2_speed
-                        # it notices about 60% of the shots (decided once per shot), only inside 160 px
+                        p2_vx, p2_vy = math.cos(a) * ai_speed, math.sin(a) * ai_speed
+                        # it notices some of the shots (60% NORMAL, 25% EASY; decided once per shot), inside 160 px
                         threats_in = [b for b in p1_bullets if math.hypot(b["x"] - center_p2_x, b["y"] - center_p2_y) < 160 and
                                       (center_p2_x - b["x"]) * b["vx"] + (center_p2_y - b["y"]) * b["vy"] > 0 and
-                                      b.setdefault("p2_sees", random.random() < 0.6)]
+                                      b.setdefault("p2_sees", random.random() < dfx_duel["duel_sees"])]
                         if threats_in:   # sidestep: dart across the nearest shot's path, away from its line
                             b = min(threats_in, key=lambda b: math.hypot(b["x"] - center_p2_x, b["y"] - center_p2_y))
                             bl = math.hypot(b["vx"], b["vy"]) or 1.0
                             px, py = -b["vy"] / bl, b["vx"] / bl
                             if (center_p2_x - b["x"]) * px + (center_p2_y - b["y"]) * py < 0:
                                 px, py = -px, -py
-                            p2_vx, p2_vy = px * p2_speed * 1.5, py * p2_speed * 1.5
+                            p2_vx, p2_vy = px * ai_speed * 1.5, py * ai_speed * 1.5
                         incoming = any(math.hypot(b["x"] - center_p2_x, b["y"] - center_p2_y) < 120 for b in threats_in)
-                        if incoming and p2_burrow_cd == 0:
+                        if incoming and p2_burrow_cd == 0 and dfx_duel["duel_burrow"]:
                             hole = min(burrow_holes, key=lambda h: math.hypot(h[0] - center_p2_x, h[1] - center_p2_y))
                             if math.hypot(hole[0] - center_p2_x, hole[1] - center_p2_y) < 110:
                                 p2_is_burrowed = True
@@ -3199,7 +3386,14 @@ async def main():
             pw = level_power(current_level)
             screen.blit(font.render(f"POWER  JET x{pw:.2f}  MISSILE x{pw:.2f}", True, (200, 210, 240)), (SCREEN_WIDTH // 2 - 10, 30))
             tactics = active_tactics(current_level)
-            screen.blit(font.render("AI: " + (", ".join(tactics) if tactics else "BASIC"), True, (255, 150, 150)), (SCREEN_WIDTH // 2 - 10, 46))
+            screen.blit(font.render("AI: " + (", ".join(tactics) if tactics else "BASIC") + f" ({modes['difficulty']})", True,
+                                    (255, 150, 150)), (SCREEN_WIDTH // 2 - 10, 46))
+            if hint["frames"] > 0:   # first-time hint box for a newly unlocked feature
+                hint["frames"] -= 1
+                t = font.render(hint["text"], True, (20, 20, 25))
+                box = t.get_rect(center=(SCREEN_WIDTH // 2, 214)).inflate(18, 10)
+                pygame.draw.rect(screen, (255, 220, 110), box, border_radius=6)
+                screen.blit(t, t.get_rect(center=box.center))
 
             if active_mutator != "NONE":
                 screen.blit(font.render(f"MUTATOR: {active_mutator}", True, (255, 100, 200)), (SCREEN_WIDTH // 2 - 10, 62))
