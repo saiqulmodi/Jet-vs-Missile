@@ -5,6 +5,15 @@ A sky-and-ground arcade shooter built with Python and [pygame-ce](https://pyga.m
 You fly a stealth jet. Missile launchers drive along the ground and fire homing missiles at you,
 and every few levels the missiles get faster, tougher and smarter.
 
+## Play it
+
+- **On your phone (phone mode, full page):**
+  https://stratos-technologies-fzco.github.io/stratos-games-site/games/saiqulmodi/index.html?mobile
+  Open it, turn the phone sideways and tap once: the game goes full screen.
+- **On the Stratos Games site:** https://stratos-technologies-fzco.github.io/stratos-games-site/play/saiqulmodi/
+
+The battlefield is as wide as your screen (16:9 computers, wider phones), so there are no black bars.
+
 ## How to play
 
 | Key | Action |

@@ -21,6 +21,36 @@ _last_fit = None
 _portrait = False   # phone held upright (taller than wide)
 
 
+BASE_W = 800                  # the layout was designed at 800 x 600
+MAX_W = 1334                  # 600 x 20:9 (wide phones held sideways)
+
+
+def pick_game_width() -> int:
+    """WIDE SCREEN (user, 2026-10-03: "remove black bar to make it wider"): the battlefield is always 600 tall
+    and as wide as the screen's shape (800 for 4:3, 1067 for 16:9, up to 1334 for 20:9 phones), so the picture
+    fills the screen with no side bars. Chosen once at start. JVM_ASPECT=1.78 forces it (tests); the
+    headless test driver keeps 800."""
+    import os
+    aspect = 4 / 3
+    if os.environ.get("JVM_ASPECT"):
+        aspect = float(os.environ["JVM_ASPECT"])
+    elif sys.platform == "emscripten":
+        try:
+            import platform
+            w, h = int(platform.window.innerWidth), int(platform.window.innerHeight)
+            # a phone loaded upright will be turned sideways to play: use its long side
+            aspect = max(w, h) / max(1, min(w, h)) if detect_mobile() else w / max(1, h)
+        except Exception:
+            pass
+    elif os.environ.get("SDL_VIDEODRIVER", "") != "dummy":
+        try:
+            dw, dh = pygame.display.get_desktop_sizes()[0]
+            aspect = dw / max(1, dh)
+        except Exception:
+            pass
+    return int(max(BASE_W, min(MAX_W, round(GAME_H * aspect))))
+
+
 def desktop_fullscreen_allowed() -> bool:
     """Full screen only for the real desktop game: not in the browser, not with the test/dummy video driver,
     and not when JVM_WINDOWED=1 is set."""
@@ -1055,8 +1085,11 @@ class DroneLauncher:
 # MAIN ASYNC LOOP
 # ==============================================================================
 async def main():
-    global joysticks
-    SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
+    global joysticks, GAME_W
+    SCREEN_WIDTH, SCREEN_HEIGHT = pick_game_width(), 600
+    GAME_W = SCREEN_WIDTH            # the browser fit uses it too
+    XC = (SCREEN_WIDTH - BASE_W) // 2   # shifts centred screens (start menu) to the middle of a wide field
+    XR = SCREEN_WIDTH - BASE_W          # shifts right-hand things (touch buttons) to the right edge
     # FULL SCREEN (user, 2026-10-03): on a computer the game starts full screen, scaled up to the monitor
     # (SCALED keeps the 4:3 picture and maps the mouse); F11 switches full screen <-> window, Esc on the start
     # screen goes back to a window. In the browser the page itself handles full screen (index.html).
@@ -1087,12 +1120,12 @@ async def main():
     game_state = "MODE_SELECT"
     prev_mode = "CAMPAIGN"
 
-    burrow_holes = [(200, 140), (620, 150), (220, 480), (600, 470), (410, 310)]
+    burrow_holes = [(int(x * SCREEN_WIDTH / BASE_W), y) for x, y in ((200, 140), (620, 150), (220, 480), (600, 470), (410, 310))]
     active_decoys = []
 
     # AIR + GROUND: the jet flies in the sky, missiles launch from trucks/silos on the ground
     GROUND_Y = 540
-    LAUNCH_SITES = [67, 200, 333, 467, 600, 733]   # one launcher per stretch of ground, edge to edge
+    LAUNCH_SITES = [round((i + 0.5) * SCREEN_WIDTH / 6) for i in range(6)]   # one launcher per stretch of ground, edge to edge
     SILO_SITE = 3                                  # boss waves launch from an armoured silo here
     sky = pygame.Surface((SCREEN_WIDTH, GROUND_Y))
     for gy in range(GROUND_Y):
@@ -1329,7 +1362,7 @@ async def main():
 
     p1_wins = 0
     p2_wins = 0
-    p2_x, p2_y = 650.0, 300.0
+    p2_x, p2_y = SCREEN_WIDTH - 150.0, 300.0
     p2_speed = 4.4
     p2_max_hp = 120
     p2_hp = p2_max_hp
@@ -1777,7 +1810,7 @@ async def main():
         p1_x, p1_y = 120.0, 300.0
         p1_vx, p1_vy = 3.0, 0.0
         autopilot.update({"mode": "cruise", "t": 120, "head": 0.0, "roll": 0.0})
-        p2_x, p2_y = 650.0, 300.0
+        p2_x, p2_y = SCREEN_WIDTH - 150.0, 300.0
         p1_bullets.clear()
         active_decoys.clear()
         p1_split_timer = 0
@@ -1833,17 +1866,17 @@ async def main():
     touch = {"on": MOBILE, "stick_id": None, "origin": (0.0, 0.0), "vec": (0.0, 0.0),
              "fire_ids": set(), "shield_ids": set(), "finger_seen": False}
     STICK_R = 70
-    FIRE_C, FIRE_R = (715, 480), 58
+    FIRE_C, FIRE_R = (715 + XR, 480), 58
     TOUCH_BUTTONS = [   # label, key it presses (None = held shield), centre, radius
-        ("SHIELD", None, (598, 522), 30),
-        ("HEAL", pygame.K_q, (598, 448), 26),
-        ("SQUAD", pygame.K_t, (565, 378), 30),
-        ("STEALTH", pygame.K_v, (630, 378), 30),
-        ("CAMO", pygame.K_c, (695, 378), 30),
-        ("FLARES", pygame.K_f, (760, 378), 30),
-        ("WPN", pygame.K_g, (630, 312), 26),       # next munition (1P, level 5+)
-        ("MSL", pygame.K_r, (695, 312), 26),       # launch the selected munition
-        ("FLIR", pygame.K_x, (760, 312), 26),      # FLIR pod on/off (1P, level 10+)
+        ("SHIELD", None, (598 + XR, 522), 30),
+        ("HEAL", pygame.K_q, (598 + XR, 448), 26),
+        ("SQUAD", pygame.K_t, (565 + XR, 378), 30),
+        ("STEALTH", pygame.K_v, (630 + XR, 378), 30),
+        ("CAMO", pygame.K_c, (695 + XR, 378), 30),
+        ("FLARES", pygame.K_f, (760 + XR, 378), 30),
+        ("WPN", pygame.K_g, (630 + XR, 312), 26),       # next munition (1P, level 5+)
+        ("MSL", pygame.K_r, (695 + XR, 312), 26),       # launch the selected munition
+        ("FLIR", pygame.K_x, (760 + XR, 312), 26),      # FLIR pod on/off (1P, level 10+)
     ]
 
     def visible_touch_buttons():
@@ -1856,12 +1889,12 @@ async def main():
             out.append(b)
         return out
     TOUCH_MENU = pygame.Rect(SCREEN_WIDTH - 74, 32, 62, 24)
-    CARD1 = pygame.Rect(55, 150, 335, 325)
-    CARD2 = pygame.Rect(410, 150, 335, 325)
-    MODE_JET_BTN = pygame.Rect(55, 482, 223, 22)       # start screen: JET MANUAL / AUTO
-    MODE_MSL_BTN = pygame.Rect(288, 482, 224, 22)      # start screen: DUEL MISSILE MANUAL / AUTO
-    MODE_DIFF_BTN = pygame.Rect(522, 482, 223, 22)     # start screen: AI EASY / NORMAL
-    CONTINUE_BTN = pygame.Rect(75, 436, 295, 26)       # inside the campaign card: continue from the best level
+    CARD1 = pygame.Rect(55 + XC, 150, 335, 325)
+    CARD2 = pygame.Rect(410 + XC, 150, 335, 325)
+    MODE_JET_BTN = pygame.Rect(55 + XC, 482, 223, 22)       # start screen: JET MANUAL / AUTO
+    MODE_MSL_BTN = pygame.Rect(288 + XC, 482, 224, 22)      # start screen: DUEL MISSILE MANUAL / AUTO
+    MODE_DIFF_BTN = pygame.Rect(522 + XC, 482, 223, 22)     # start screen: AI EASY / NORMAL
+    CONTINUE_BTN = pygame.Rect(75 + XC, 436, 295, 26)       # inside the campaign card: continue from the best level
     TOUCH_PAUSE = pygame.Rect(SCREEN_WIDTH // 2 - 31, 80, 62, 24)
     if MOBILE:
         modes["missile"] = "AUTO"   # phones: always player vs AI (user, 2026-10-03), no second human player
@@ -2395,11 +2428,11 @@ async def main():
             lb_txt = f"BEST RECORD: LEVEL {saved_data.get('max_level_reached', 1)} | HIGH SCORE: {saved_data.get('high_score', 0)}"
             screen.blit(font.render(lb_txt, True, (255, 215, 60)), (SCREEN_WIDTH // 2 - 200, 120))
 
-            card1 = pygame.Rect(55, 150, 335, 325)
+            card1 = CARD1
             pygame.draw.rect(screen, (18, 22, 38), card1, border_radius=12)
             pygame.draw.rect(screen, (255, 140, 0), card1, 2, border_radius=12)
 
-            screen.blit(big_font.render("1P CAMPAIGN", True, (255, 180, 80)), (75, 168))
+            screen.blit(big_font.render("1P CAMPAIGN", True, (255, 180, 80)), (75 + XC, 168))
             lines1 = [
                 "Jet vs AI missiles, drones & silos",
                 "[YOU: 3X POWER, +15% vs AI]:",
@@ -2414,7 +2447,7 @@ async def main():
             y_c1 = 202
             for ln in lines1:
                 col = (100, 255, 150) if ">>" in ln else ((255, 220, 100) if "3X" in ln else (210, 220, 235))
-                screen.blit(font.render(ln, True, col), (70, y_c1))
+                screen.blit(font.render(ln, True, col), (70 + XC, y_c1))
                 y_c1 += 22
             if best_level() > 1:   # continue the campaign from the best level reached
                 hov = CONTINUE_BTN.collidepoint(mouse_pos) and not touch["on"]
@@ -2424,12 +2457,12 @@ async def main():
                 t = font.render(f"CONTINUE FROM LEVEL {best_level()}{key3}", True, (255, 200, 110))
                 screen.blit(t, t.get_rect(center=CONTINUE_BTN.center))
 
-            card2 = pygame.Rect(410, 150, 335, 325)
+            card2 = CARD2
             pygame.draw.rect(screen, (18, 22, 38), card2, border_radius=12)
             pygame.draw.rect(screen, (0, 210, 255), card2, 2, border_radius=12)
 
             duel_vs_ai = modes["missile"] == "AUTO"     # always on phones
-            screen.blit(big_font.render("DUEL vs AI" if duel_vs_ai else "2P DUEL (PVP)", True, (0, 220, 255)), (435, 168))
+            screen.blit(big_font.render("DUEL vs AI" if duel_vs_ai else "2P DUEL (PVP)", True, (0, 220, 255)), (435 + XC, 168))
             lines2 = [
                 "You (Jet) vs AI Missile" if duel_vs_ai else "P1 (Jet) vs P2 (Missile)",
                 "[YOU GET +15% IN EVERYTHING]:" if duel_vs_ai else "[EQUAL BALANCED COMBAT]:",
@@ -2445,7 +2478,7 @@ async def main():
             y_c2 = 202
             for ln in lines2:
                 col = (100, 255, 150) if ">>" in ln else ((0, 240, 255) if "EQUAL" in ln or "+15%" in ln else (210, 220, 235))
-                screen.blit(font.render(ln, True, col), (425, y_c2))
+                screen.blit(font.render(ln, True, col), (425 + XC, y_c2))
                 y_c2 += 22
 
             # three simple switches (click / tap, keys J / K / H, controller Square / Triangle / L1)

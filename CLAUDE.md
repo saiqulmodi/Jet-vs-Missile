@@ -127,6 +127,13 @@ Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2
   (first finger tap -> requestFullscreen + landscape lock; mouse clicks ignored; iPhone Safari can't). When rebuilding
   with pygbag copy ONLY the .apk / .tar.gz into docs/, never pygbag's index.html (it would drop that script).
   `tools/make_stratos_box.py` copies docs/index.html into the Stratos box, so the script goes there too.
+- **Wide screen** (user, 2026-10-03: "remove black bar to make it wider"): `pick_game_width()` sets the field width
+  once at start from the screen shape (height always 600; 800..`MAX_W` 1334; phones use their long side; dummy
+  driver = 800, `JVM_ASPECT` forces it). Layout was designed at `BASE_W` 800: centred screens shift by `XC`,
+  right-hand touch buttons by `XR`; launch sites, burrow holes, P2 start spread over the width. New UI must use
+  SCREEN_WIDTH / XC / XR, never a fixed 800-based x.
+- **Phone link** (user, 2026-10-03): https://stratos-technologies-fzco.github.io/stratos-games-site/games/saiqulmodi/index.html?mobile
+  (the box page itself, no site frame; `?mobile` forces touch mode). stratos.games does not serve it (404).
 - **Online 1v1 / 2v2: later** (user, 2026-10-03: "keep online 1vs1,2vs2 for future"). Not built. Plan when asked:
   server-authoritative simulation at 60 Hz, clients send inputs only, server sends snapshots at 20 Hz, clients
   interpolate 100 ms behind and predict their own jet; symmetric rules (`human_buff` = 1.0).
