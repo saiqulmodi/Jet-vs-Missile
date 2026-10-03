@@ -121,6 +121,12 @@ Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2
   - Continue: campaign card button "CONTINUE FROM LEVEL N" (best level reached), key 3, controller R1.
   - Phone speed: touch layer cached (`touch_cache`, redrawn only when its state changes), FLIR cone on a small
     surface, `create_jet_sprite` memoised (lru_cache; callers must only scale/rotate copies, never draw on it).
+- **Full screen** (user, 2026-10-03: "it is not showing full screen display"): desktop starts `SCALED | FULLSCREEN`
+  (`desktop_fullscreen_allowed`: not in the browser, not with the dummy driver, not with `JVM_WINDOWED=1`); F11 toggles,
+  Esc on the start screen goes back to a window. Browser: `docs/index.html` has a hand-added script before `</body>`
+  (first finger tap -> requestFullscreen + landscape lock; mouse clicks ignored; iPhone Safari can't). When rebuilding
+  with pygbag copy ONLY the .apk / .tar.gz into docs/, never pygbag's index.html (it would drop that script).
+  `tools/make_stratos_box.py` copies docs/index.html into the Stratos box, so the script goes there too.
 - **Online 1v1 / 2v2: later** (user, 2026-10-03: "keep online 1vs1,2vs2 for future"). Not built. Plan when asked:
   server-authoritative simulation at 60 Hz, clients send inputs only, server sends snapshots at 20 Hz, clients
   interpolate 100 ms behind and predict their own jet; symmetric rules (`human_buff` = 1.0).

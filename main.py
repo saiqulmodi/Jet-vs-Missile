@@ -21,6 +21,14 @@ _last_fit = None
 _portrait = False   # phone held upright (taller than wide)
 
 
+def desktop_fullscreen_allowed() -> bool:
+    """Full screen only for the real desktop game: not in the browser, not with the test/dummy video driver,
+    and not when JVM_WINDOWED=1 is set."""
+    import os
+    return (sys.platform != "emscripten" and os.environ.get("SDL_VIDEODRIVER", "") != "dummy"
+            and os.environ.get("JVM_WINDOWED") != "1")
+
+
 def detect_mobile():
     """True on phones/tablets (finger as the main pointer) or with ?mobile in the link.
     Desktop tests can force it with the JVM_MOBILE=1 environment variable."""
@@ -1049,7 +1057,22 @@ class DroneLauncher:
 async def main():
     global joysticks
     SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
-    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+    # FULL SCREEN (user, 2026-10-03): on a computer the game starts full screen, scaled up to the monitor
+    # (SCALED keeps the 4:3 picture and maps the mouse); F11 switches full screen <-> window, Esc on the start
+    # screen goes back to a window. In the browser the page itself handles full screen (index.html).
+    desktop_fs = desktop_fullscreen_allowed()
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT),
+                                     (pygame.SCALED | pygame.FULLSCREEN) if desktop_fs else 0)
+    fullscreen = {"on": desktop_fs}
+
+    def set_fullscreen(on):
+        if not desktop_fs or fullscreen["on"] == on:
+            return
+        try:
+            pygame.display.toggle_fullscreen()
+            fullscreen["on"] = on
+        except pygame.error:
+            pass
     dark_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
     pygame.display.set_caption("Jet vs Missile")
     clock = pygame.time.Clock()
@@ -2319,7 +2342,11 @@ async def main():
                         jump_to_level(lvl)
                         break
 
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
+                set_fullscreen(not fullscreen["on"])
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                if game_state == "MODE_SELECT":
+                    set_fullscreen(False)          # Esc on the start screen: back to a window (to close it)
                 game_state = "MODE_SELECT"
                 saved_data.update(load_save_data())
 
@@ -2444,7 +2471,8 @@ async def main():
             screen.blit(t, t.get_rect(center=(SCREEN_WIDTH // 2, 516)))
 
             pad_msg = "Game Controller Connected" if ps_pad_p1 else ("Touch Screen" if touch["on"] else "Keyboard Connected")
-            t = font.render(f"Controller: {pad_msg} | Esc to Switch Modes", True, (140, 150, 170))
+            fs_tip = " | F11 = full screen / window" if desktop_fs else ""
+            t = font.render(f"Controller: {pad_msg} | Esc = menu{fs_tip}", True, (140, 150, 170))
             screen.blit(t, t.get_rect(center=(SCREEN_WIDTH // 2, 536)))
             if touch["on"]:
                 tap_hint = big_font.render("TAP A CARD TO PLAY", True, (100, 255, 150))
