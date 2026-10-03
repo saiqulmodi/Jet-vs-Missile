@@ -229,6 +229,10 @@ Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2
   uses SAFEGUARD at most every 20 s with 5+ threats (`AI_SAFEGUARD_GAP`), flares every 6 s (`AI_FLARE_GAP`), and
   decides once per missile whether to shield (50%, EASY 25%). Result: levels 11+ the launchers win most waves;
   levels 1-10 (one truck) the jet usually survives the 60 s.
+- **Phone, launcher side** (user, 2026-10-03: "missile launcher vs jet is not in mobile mode"): it works on phones (tap
+  the bottom-middle LAUNCHER switch to YOU); with touch on, your campaign truck keeps to 230..W-270 so it never hides
+  under MISSILE / DRONE, and TOUCH_SWAP sits under PAUSE. Phone flow test: scratchpad-style headless run with
+  JVM_MOBILE=1 posting FINGERDOWN / FINGERUP events.
 - **+15% power for the human side** (now 20% for the launcher side, see above) (user, 2026-10-03: "build power is 15% more than AI"): playing the launchers,
   `launcher_buff()` = 1.15: every missile of yours +15% speed and fuse reach, drones +15% hit, reload / driving / stock
   +15%, duel launcher armour 14 hits; the AI jet gets 1.0 (`pbuff`, `campaign_jet_buff`). The EASY/NORMAL switch then
