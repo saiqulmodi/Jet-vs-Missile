@@ -368,6 +368,11 @@ def test_destroyed_drone_launcher_is_rebuilt_after_2_seconds():
     assert main.LAUNCHER_REVIVE_FRAMES == 120
 
 
+def test_safeguard_lasts_3_seconds_and_recharges_in_10():
+    assert main.SAFEGUARD_FRAMES == 3 * 60
+    assert main.SAFEGUARD_COOLDOWN == 10 * 60
+
+
 def test_missile_gives_up_after_20_seconds_and_falls():
     e = main.MissileEnemy(10, launch_x=400, ground_y=540)
     for f in range(main.MISSILE_FLIGHT_FRAMES + 5):

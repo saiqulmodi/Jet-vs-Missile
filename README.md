@@ -27,6 +27,7 @@ The battlefield is as wide as your screen (16:9 computers, wider phones), so the
 | T | Triple jet squad |
 | C | Camouflage: the jet fades for 4 s and missiles lose their lock |
 | V | Stealth: 2 s invisible to missiles and launchers (no lock, fuses can't detect the jet, launchers hold fire); 8 s recharge |
+| B | SAFEGUARD: for 3 s every enemy missile and drone in the air is shot down by the jet's interceptors; ready again 10 s after you switched it on (phone: SAFE button; controller: hold button 7 + Cross/A) |
 | L | Switch to laser weapons |
 | G | Next ordnance (nation missiles and bombs, from level 5) |
 | R / right click | Launch the selected ordnance |

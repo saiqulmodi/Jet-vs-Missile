@@ -1032,6 +1032,14 @@ class SiloLauncher:
 # Drones are subsonic: half the jet's top speed. They home on the jet and blow up against it (HP damage,
 # the shield E blocks it). The jet's protective AUTO-GUN fires by itself at drones inside its range.
 # ==============================================================================
+# SAFEGUARD (user, 2026-10-03: "safe guard jet like patriot technology, one key ... for 3 seconds which will
+# [destroy] entire fly objects except jet, and same key active after ten seconds"): key B (touch SAFE, controller
+# hold 7 + Cross/A). For SAFEGUARD_FRAMES every enemy missile and drone in the air is shot down by the jet's
+# interceptors; ready again SAFEGUARD_COOLDOWN frames after it was switched on. The jet's own weapons, its flares
+# and missiles still sitting on their launchers are not touched. (Own name: no real system names in the game.)
+SAFEGUARD_FRAMES = 180      # 3 s
+SAFEGUARD_COOLDOWN = 600    # 10 s from activation
+SAFEGUARD_KILL_SCORE = 50   # per missile it brings down (drones score as usual)
 LAUNCHER_REVIVE_FRAMES = 120   # a destroyed launcher (truck or drone launcher) is rebuilt 2 s later (user, 2026-10-03)
 DRONE_MAX_LEVEL = 20
 DRONE_MISSILE_LEVEL = 5      # drone launchers carry their missile only from level 5 (keeps level 1 calm)
@@ -2039,6 +2047,8 @@ async def main():
         p1_vx, p1_vy = 3.0, 0.0
         autopilot.update({"mode": "cruise", "t": 120, "head": 0.0, "roll": 0.0})
         sky_esc["t"], sky_esc["ret"] = 0, False
+        safeguard["t"] = 0                          # (its recharge carries on across rounds)
+        safeguard["zaps"].clear()
         p2_x, p2_y = SCREEN_WIDTH - 150.0, 300.0
         p1_bullets.clear()
         active_decoys.clear()
@@ -2106,6 +2116,7 @@ async def main():
         ("WPN", pygame.K_g, (630 + XR, 312), 26),       # next munition (1P, level 5+)
         ("MSL", pygame.K_r, (695 + XR, 312), 26),       # launch the selected munition
         ("FLIR", pygame.K_x, (760 + XR, 312), 26),      # FLIR pod on/off (1P, level 10+)
+        ("SAFE", pygame.K_b, (565 + XR, 312), 26),      # SAFEGUARD: 3 s, every missile / drone in the air goes down
     ]
 
     def visible_touch_buttons():
@@ -2151,6 +2162,30 @@ async def main():
     PAD_ORD_BUTTON = 7          # the one controller button no other action uses
     pad_ord = {"down": False, "used": False}
     pause = {"on": False, "drawn": False}
+    safeguard = {"t": 0, "cd": 0, "zaps": []}      # SAFEGUARD: frames left on, frames to recharge, interceptor lines
+
+    def run_safeguard(cx, cy):
+        """One frame of SAFEGUARD: every enemy missile in the air and every drone is shot down by an interceptor
+        from the jet at (cx, cy). Missiles still on their launchers are not flying, so they are left alone."""
+        nonlocal total_score
+        targets = []
+        if game_state == "CAMPAIGN":
+            for e in [e for e in campaign_enemies if e.launch_delay == 0]:
+                campaign_enemies.remove(e)
+                targets.append((e.x + e.width / 2, e.y + e.height / 2))
+                total_score += SAFEGUARD_KILL_SCORE
+        elif game_state == "DUEL":
+            for e in duel["missiles"][:]:
+                duel["missiles"].remove(e)
+                targets.append((e.x + e.width / 2, e.y + e.height / 2))
+        for d in drones[:]:
+            kill_drone(d, d.x, d.y)
+            targets.append((d.x, d.y))
+        for tx, ty in targets:
+            blasts.append([tx, ty, 0, 0.8])
+            safeguard["zaps"].append([cx, cy, tx, ty, 10])
+        if targets:
+            SFX.snd_explode.play()
     hint = {"text": "", "frames": 0}
 
     names = load_player_names()                     # [player 1, player 2]
@@ -2334,7 +2369,10 @@ async def main():
                 ready = bool(sel) and p1_ammo.get(sel["id"], 0) > 0 and ord_sel["cd"] == 0
             elif label == "FLIR":
                 ready = flir["on"] or flir["energy"] > 10
-            held = (label == "SHIELD" and bool(touch["shield_ids"])) or (label == "FLIR" and flir["on"])
+            elif label == "SAFE":
+                ready = safeguard["cd"] == 0
+            held = (label == "SHIELD" and bool(touch["shield_ids"])) or (label == "FLIR" and flir["on"]) or \
+                   (label == "SAFE" and safeguard["t"] > 0)
             states.append((label, c, r, ready, held))
         key = ((int(base[0]), int(base[1])), (int(knob[0]), int(knob[1])), firing, tuple(states), game_state)
         if key != touch_cache["key"]:
@@ -2499,6 +2537,9 @@ async def main():
             # hold it + d-pad up = FLIR pod on/off. Without it held the d-pad works as before.
             if event.type == pygame.JOYBUTTONDOWN and event.joy == 0 and event.button == PAD_ORD_BUTTON:
                 pad_ord["down"], pad_ord["used"] = True, False
+            elif event.type == pygame.JOYBUTTONDOWN and event.joy == 0 and event.button == 0 and pad_ord["down"]:
+                pad_ord["used"] = True                 # hold 7 + Cross/A = SAFEGUARD
+                post_key(pygame.K_b)
             elif event.type == pygame.JOYBUTTONUP and event.joy == 0 and event.button == PAD_ORD_BUTTON:
                 if pad_ord["down"] and not pad_ord["used"]:
                     post_key(pygame.K_r)
@@ -2611,6 +2652,13 @@ async def main():
                     p1_stealth_cd = round(STEALTH_COOLDOWN / pbuff())
                     p1_stealth_x, p1_stealth_y = p1_x + 50, p1_y + 40
                     SFX.snd_decoy.play()
+
+            # P1 SAFEGUARD (Key 'B', touch SAFE, controller hold 7 + Cross): 3 s, everything flying at the jet goes down
+            if game_state in ("CAMPAIGN", "DUEL") and safeguard["cd"] == 0 and p1_hp > 0:
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_b:
+                    safeguard["t"], safeguard["cd"] = SAFEGUARD_FRAMES, SAFEGUARD_COOLDOWN
+                    SFX.snd_shield.play()
+                    floating_texts.append(["SAFEGUARD!", p1_x, p1_y - 30, (120, 220, 255), 40])
 
             # P1 CAMOUFLAGE (Key 'C' or Controller Share): fade out, missiles head for the last seen spot
             if game_state in ("CAMPAIGN", "DUEL") and p1_camo_cd == 0 and p1_hp > 0:
@@ -2965,6 +3013,12 @@ async def main():
             p1_stealth_timer -= 1
         if p1_stealth_cd > 0:
             p1_stealth_cd -= 1
+        if safeguard["cd"] > 0:
+            safeguard["cd"] -= 1
+        if safeguard["t"] > 0:              # SAFEGUARD on: everything flying at the jet is shot down
+            safeguard["t"] -= 1
+            if p1_hp > 0:
+                run_safeguard(center_p1_x, center_p1_y)
 
         for dec in active_decoys[:]:
             dec["life"] -= 1
@@ -3733,6 +3787,18 @@ async def main():
                 tag = tag_font.render("AI LAUNCHER" if modes["missile"] == "AUTO" else "P2 LAUNCHER", True, (0, 210, 255))
                 screen.blit(tag, tag.get_rect(center=(lx, GROUND_Y + 14)))
 
+        # SAFEGUARD: a pulsing protective dome around the jet and the interceptor trails to what it shot down
+        if safeguard["t"] > 0 and p1_hp > 0:
+            r = int(70 + 8 * math.sin(pygame.time.get_ticks() * 0.02))
+            pygame.draw.circle(screen, (120, 220, 255), (int(center_p1_x), int(center_p1_y)), r, 2)
+            pygame.draw.circle(screen, (200, 240, 255), (int(center_p1_x), int(center_p1_y)), r - 6, 1)
+        for z in safeguard["zaps"][:]:
+            z[4] -= 1
+            if z[4] <= 0:
+                safeguard["zaps"].remove(z)
+            else:
+                pygame.draw.line(screen, (200, 240, 255), (z[0], z[1]), (z[2], z[3]), 2)
+
         draw_blasts()   # missile self-destruct fireballs, on top of the jet and missiles
 
         if active_mutator == "BLACKOUT FOG" and game_state == "CAMPAIGN":
@@ -3775,6 +3841,13 @@ async def main():
         else:
             st_stat, st_col = "STEALTH [V]: READY", (150, 200, 255)
         screen.blit(font.render(st_stat, True, st_col), (20, 116))
+        if safeguard["t"] > 0:
+            sg_stat, sg_col = f"SAFEGUARD ACTIVE ({safeguard['t'] // 60 + 1}s)", (120, 220, 255)
+        elif safeguard["cd"] > 0:
+            sg_stat, sg_col = f"SAFEGUARD [B]: RECHARGING {safeguard['cd'] // 60 + 1}s", (120, 130, 150)
+        else:
+            sg_stat, sg_col = "SAFEGUARD [B]: READY", (120, 220, 255)
+        screen.blit(font.render(sg_stat, True, sg_col), (20, 196 if game_state == "CAMPAIGN" else 136))
 
         if game_state == "CAMPAIGN":
             sel = selected_munition()

@@ -168,6 +168,11 @@ Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2
   stay lost; its riding missiles are gone); a drone launcher (`destroy` / `tick_revive`) comes back with the drones /
   missile it had left, and counts as pending while rebuilding. Wrecks show "REBUILD n.ns". Not silos, not the duel
   launcher (wrecking it wins the round).
+- **SAFEGUARD** (user, 2026-10-03: "safe guard jet like patriot technology, one key for 3 seconds which will
+  [destroy] entire fly objects except jet, and same key active after ten seconds"): key B, touch SAFE, controller hold
+  7 + Cross. `SAFEGUARD_FRAMES` 180 on, `SAFEGUARD_COOLDOWN` 600 from activation (exact numbers asked: no +15%). Each
+  frame `run_safeguard` downs every flying enemy missile (campaign + duel) and every drone, with interceptor trails and
+  a dome; missiles on launchers are left. Own name, not the real system's. Timers pause with the round break / pause.
 - **Online 1v1 / 2v2: later** (user, 2026-10-03: "keep online 1vs1,2vs2 for future"). Not built. Plan when asked:
   server-authoritative simulation at 60 Hz, clients send inputs only, server sends snapshots at 20 Hz, clients
   interpolate 100 ms behind and predict their own jet; symmetric rules (`human_buff` = 1.0).
