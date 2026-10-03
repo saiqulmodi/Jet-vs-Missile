@@ -1641,7 +1641,9 @@ async def main():
             if modes["side"] == "LAUNCHER" and i == cmd["sel"]:   # your truck: you drive it along the whole ground
                 if cmd["drive"]:
                     ln["vx"] = math.copysign(abs(ln["vx"]) or 0.8, cmd["drive"])   # (cab faces the way you drive)
-                ln["x"] = max(36.0, min(SCREEN_WIDTH - 36.0, ln["x"] + cmd["drive"] * DUEL_DRIVE * launcher_buff()))
+                # (on phones it stays in the open between the < > buttons and MISSILE / DRONE, like the duel launcher)
+                lo, hi = (230.0, SCREEN_WIDTH - 270.0) if touch["on"] else (36.0, SCREEN_WIDTH - 36.0)
+                ln["x"] = max(lo, min(hi, ln["x"] + cmd["drive"] * DUEL_DRIVE * launcher_buff()))
                 continue
             ln["x"] += ln["vx"]
             if ln["x"] < ln["lo"]:            # back into its own stretch (gently: a truck pushed aside drives back)
@@ -2686,7 +2688,7 @@ async def main():
     CONTINUE_BTN = pygame.Rect(75 + XC, 436, 295, 26)       # inside the campaign card: continue from the best level
     SIDE_BTN = pygame.Rect(430 + XC, 436, 295, 26)          # inside the duel card: you play the JET or the LAUNCHER
     TOUCH_PAUSE = pygame.Rect(SCREEN_WIDTH // 2 - 31, 80, 62, 24)
-    TOUCH_SWAP = pygame.Rect(SCREEN_WIDTH // 2 + 41, 80, 62, 24)     # duel: swap sides
+    TOUCH_SWAP = pygame.Rect(SCREEN_WIDTH // 2 - 31, 110, 62, 24)    # swap sides (under PAUSE, clear of the HUD)
     if MOBILE:
         modes["missile"] = "AUTO"   # phones: always player vs AI (user, 2026-10-03), no second human player
 
@@ -4821,7 +4823,7 @@ async def main():
         elif game_state == "DUEL":
             draw_level_bar()                     # pick any level for the duel (and 4 / SWAP swaps sides)
             t = font.render(f"DUEL LEVEL {current_level}  |  [4] SWAP SIDES", True, (255, 230, 100))
-            screen.blit(t, t.get_rect(midtop=(SCREEN_WIDTH // 2, 110)))
+            screen.blit(t, t.get_rect(midtop=(SCREEN_WIDTH // 2, 142)))
             p2_col = (0, 210, 255) if p2_hp > 1 else (255, 60, 60)
             p2_head = font.render(f"{names[0]}: YOUR LAUNCHER (+20% vs AI)" if ai_jet() else
                                   ("AI LAUNCHER" if modes["missile"] == "AUTO" else f"{names[1]}: LAUNCHER"), True, (0, 210, 255))
