@@ -122,8 +122,9 @@ Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2
   - Phone speed: touch layer cached (`touch_cache`, redrawn only when its state changes), FLIR cone on a small
     surface, `create_jet_sprite` memoised (lru_cache; callers must only scale/rotate copies, never draw on it).
 - **Full screen** (user, 2026-10-03: "it is not showing full screen display"): desktop starts `SCALED | FULLSCREEN`
-  (`desktop_fullscreen_allowed`: not in the browser, not with the dummy driver, not with `JVM_WINDOWED=1`); F11 toggles,
-  Esc on the start screen goes back to a window. Browser: `docs/index.html` has a hand-added script before `</body>`
+  (`desktop_fullscreen_allowed`: not in the browser, not with the dummy driver, not with `JVM_WINDOWED=1`).
+  User, 2026-10-03: "start it in full screen always": every start is full screen; only F11 switches to a window;
+  Esc never leaves full screen; Alt+F4 closes (shown on the start screen). Browser: `docs/index.html` has a hand-added script before `</body>`
   (first finger tap -> requestFullscreen + landscape lock; mouse clicks ignored; iPhone Safari can't). When rebuilding
   with pygbag copy ONLY the .apk / .tar.gz into docs/, never pygbag's index.html (it would drop that script).
   `tools/make_stratos_box.py` copies docs/index.html into the Stratos box, so the script goes there too.
@@ -134,6 +135,25 @@ Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2
   SCREEN_WIDTH / XC / XR, never a fixed 800-based x.
 - **Phone link** (user, 2026-10-03): https://stratos-technologies-fzco.github.io/stratos-games-site/games/saiqulmodi/index.html?mobile
   (the box page itself, no site frame; `?mobile` forces touch mode). stratos.games does not serve it (404).
+- **Launcher counts** (user, 2026-10-03: "make launcher 1,2,...10 for each 10 level up, similarly drone launcher
+  also"): `launcher_count(level)` and `drone_launcher_count(level)` = 1 at levels 1-10, +1 every 10 levels, 10 from 91.
+  The truck row is rebuilt every wave (`reset_launchers`, own stretch each); the boss silo is the middle one (`boss_site`).
+  (Replaces the old fixed six launchers and the drone launchers' one-per-level count.)
+- **Physics / ground** (user, 2026-10-03: "missile launchers are not in ground, it forgets rules of law of physics"):
+  nothing launches from thin air. Duel tunnel holes are in the ground (P2 dives in and comes back up just above
+  another hole, with a dust burst); hidden-silo missiles rise out of the hatch at ground level.
+- **Phones never auto-fire** (user, 2026-10-03): JET AUTO's auto-aim/auto-fire is off with `MOBILE` / touch; there the
+  jet fires only while FIRE is held (the drone auto-gun still works, it was asked for).
+- **The user's older game** (squirrel vs viper) lives in its own repo `saiqulmodi/Stratos_squirrel_vs_viper`, live at
+  https://saiqulmodi.github.io/Stratos_squirrel_vs_viper/. The Stratos site has ONE box per account (games/saiqulmodi/);
+  a 2026-10-02 session replaced the squirrel game there with Jet vs Missile.
+- **Duel = JET vs LAUNCHER** (user, 2026-10-03: "keep it simple man vs AI: jet will fly, missile and drone should fire
+  from launcher only, launcher can move, AI or man playing as missile launcher"): P2 drives a ground launcher (arrows
+  left/right, UP missile, DOWN drone; 2nd pad: stick, buttons 0/1; AUTO = AI drives, reads shot landing spots and
+  sprints away). Armoured: `p2_max_hp` 12 hits (2 hits ended rounds in ~2 s). The flying P2 missile, burrow holes and
+  P2 holograms are gone. Drones/auto-gun shared via `update_drones_and_autogun`. Campaign drone launchers drive too
+  (trucks and drone launchers turn back before touching). On phones the duel launcher stays between stick and buttons.
+- **Stratos boxes**: the user can have one box per game; Squirrel vs Viper restored in `games/saiqulmodi-squirrel-vs-viper/`.
 - **Online 1v1 / 2v2: later** (user, 2026-10-03: "keep online 1vs1,2vs2 for future"). Not built. Plan when asked:
   server-authoritative simulation at 60 Hz, clients send inputs only, server sends snapshots at 20 Hz, clients
   interpolate 100 ms behind and predict their own jet; symmetric rules (`human_buff` = 1.0).

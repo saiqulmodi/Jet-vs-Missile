@@ -965,8 +965,14 @@ def drone_level(level: int) -> int:
     return max(1, min(DRONE_MAX_LEVEL, level))
 
 
+def launcher_count(level: int) -> int:
+    """Missile launchers on the ground (user, 2026-10-03): 1 at levels 1-10, 2 at 11-20 ... 10 from level 91."""
+    return max(1, min(10, 1 + (max(1, level) - 1) // 10))
+
+
 def drone_launcher_count(level: int) -> int:
-    return max(1, min(DRONE_LAUNCHER_MAX, level))
+    """Drone launchers, the same steps (user, 2026-10-03: "similar for drone launcher also"): 1 at 1-10 ... 10 at 91+."""
+    return max(1, min(DRONE_LAUNCHER_MAX, 1 + (max(1, level) - 1) // 10))
 
 
 def drones_per_launcher(level: int) -> int:
@@ -1056,6 +1062,17 @@ class DroneLauncher:
         self.hp = self.max_hp = 2
         self.laser_frames = 0
         self.targetable = True
+        # it drives back and forth along the ground inside its own stretch (user, 2026-10-03: "launcher can move")
+        self.lo, self.hi = x - 30, x + 30
+        self.vx = random.choice((-1, 1)) * random.uniform(0.4, 0.9)
+
+    def move(self):
+        if not self.alive:
+            return
+        self.x += self.vx
+        if self.x < self.lo or self.x > self.hi:
+            self.vx = -self.vx
+            self.x = max(self.lo, min(self.hi, self.x))
 
     @property
     def pending(self) -> bool:
@@ -1090,9 +1107,9 @@ async def main():
     GAME_W = SCREEN_WIDTH            # the browser fit uses it too
     XC = (SCREEN_WIDTH - BASE_W) // 2   # shifts centred screens (start menu) to the middle of a wide field
     XR = SCREEN_WIDTH - BASE_W          # shifts right-hand things (touch buttons) to the right edge
-    # FULL SCREEN (user, 2026-10-03): on a computer the game starts full screen, scaled up to the monitor
-    # (SCALED keeps the 4:3 picture and maps the mouse); F11 switches full screen <-> window, Esc on the start
-    # screen goes back to a window. In the browser the page itself handles full screen (index.html).
+    # FULL SCREEN (user, 2026-10-03: "start it in full screen always"): on a computer the game ALWAYS starts
+    # full screen, scaled to the monitor (SCALED maps the mouse). Only F11 switches to a window (and back);
+    # Esc never leaves full screen; Alt+F4 closes. In the browser the page itself handles full screen (index.html).
     desktop_fs = desktop_fullscreen_allowed()
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT),
                                      (pygame.SCALED | pygame.FULLSCREEN) if desktop_fs else 0)
@@ -1120,13 +1137,10 @@ async def main():
     game_state = "MODE_SELECT"
     prev_mode = "CAMPAIGN"
 
-    burrow_holes = [(int(x * SCREEN_WIDTH / BASE_W), y) for x, y in ((200, 140), (620, 150), (220, 480), (600, 470), (410, 310))]
     active_decoys = []
 
     # AIR + GROUND: the jet flies in the sky, missiles launch from trucks/silos on the ground
     GROUND_Y = 540
-    LAUNCH_SITES = [round((i + 0.5) * SCREEN_WIDTH / 6) for i in range(6)]   # one launcher per stretch of ground, edge to edge
-    SILO_SITE = 3                                  # boss waves launch from an armoured silo here
     sky = pygame.Surface((SCREEN_WIDTH, GROUND_Y))
     for gy in range(GROUND_Y):
         t = gy / GROUND_Y
@@ -1157,13 +1171,20 @@ async def main():
     # Mobile launchers spread over the whole ground: each drives back and forth inside its own
     # stretch, takes many hits to destroy (tougher every level) and is rebuilt for the next wave.
     # On boss waves the middle one is an armoured silo that doesn't move.
-    zone_w = SCREEN_WIDTH / len(LAUNCH_SITES)
-    launchers = [{"x": float(x), "lo": i * zone_w + 32, "hi": (i + 1) * zone_w - 32,
-                  "vx": random.choice((-1, 1)) * random.uniform(0.5, 1.1),
-                  "hp": 1, "max_hp": 1, "alive": True, "reloads": 0, "reload_cd": 0}
-                 for i, x in enumerate(LAUNCH_SITES)]
+    # How many: launcher_count(level) -- 1 at levels 1-10, one more every 10 levels, 10 from level 91
+    # (user, 2026-10-03). The row is rebuilt for every wave, each launcher in its own stretch of ground.
+    launchers = []
+
+    def boss_site():
+        return len(launchers) // 2         # boss waves: the middle launcher is the armoured silo
 
     def reset_launchers(lvl):
+        n = launcher_count(lvl)
+        zone_w = SCREEN_WIDTH / n
+        launchers[:] = [{"x": (i + 0.5) * zone_w, "home": (i + 0.5) * zone_w,
+                         # the truck keeps to the first 60% of its stretch; its drone launcher sits at 75%
+                         "lo": i * zone_w + min(32, zone_w * 0.3), "hi": i * zone_w + zone_w * 0.6,
+                         "vx": random.choice((-1, 1)) * random.uniform(0.5, 1.1)} for i in range(n)]
         for i, ln in enumerate(launchers):
             ln["max_hp"] = 2   # every launcher, the boss silo too, is destroyed by its 2nd hit
             ln["hp"] = ln["max_hp"]
@@ -1181,8 +1202,8 @@ async def main():
         for i, ln in enumerate(launchers):
             if not ln["alive"]:
                 continue
-            if is_boss_wave and i == SILO_SITE:
-                ln["x"] = float(LAUNCH_SITES[SILO_SITE])
+            if is_boss_wave and i == boss_site():
+                ln["x"] = float(ln["home"])
                 continue
             ln["x"] += ln["vx"]
             if ln["x"] < ln["lo"] or ln["x"] > ln["hi"]:
@@ -1190,6 +1211,10 @@ async def main():
                 ln["x"] = max(ln["lo"], min(ln["hi"], ln["x"]))
             elif random.random() < 0.004:
                 ln["vx"] = -ln["vx"]          # change direction now and then
+            for dl in drone_launchers:        # never drives through a drone launcher: turns back before it
+                if dl.alive and abs(dl.x - ln["x"]) < 52 and (dl.x - ln["x"]) * ln["vx"] > 0:
+                    ln["vx"] = -ln["vx"]
+                    break
         for e in enemies:                     # a waiting missile rides on its launcher
             if e.launch_delay > 0 and e.site is not None:
                 e.x = launchers[e.site]["x"] - e.width // 2 + e.barrel_off
@@ -1206,7 +1231,7 @@ async def main():
                 for k in range(ln["max_hp"]):
                     col = (90, 230, 90) if k < ln["hp"] else (60, 20, 20)
                     pygame.draw.rect(screen, col, (lx - 22 + k * seg, GROUND_Y - 70, seg - 2, 5))
-            if is_boss_wave and i == SILO_SITE:
+            if is_boss_wave and i == boss_site():
                 pygame.draw.rect(screen, (60, 60, 70), (lx - 26, GROUND_Y - 8, 52, 14))      # missile silo
                 pygame.draw.rect(screen, (255, 40, 80), (lx - 26, GROUND_Y - 8, 52, 14), 2)
                 pygame.draw.rect(screen, (20, 20, 25), (lx - 14, GROUND_Y - 6, 28, 8))
@@ -1362,10 +1387,22 @@ async def main():
 
     p1_wins = 0
     p2_wins = 0
+    # DUEL = JET vs LAUNCHER (user, 2026-10-03: "keep it simple man vs AI: jet will fly, missile and drone should fire
+    # from launcher only, launcher can move, AI or man playing as missile launcher"). P2 is a launcher that drives
+    # along the ground (p2_x = its centre) and fires missiles and drones. Unlike the campaign trucks (2 hits) it is
+    # armoured (p2_max_hp hits): with 2 hits an auto-firing jet ended every round in about 2 seconds.
     p2_x, p2_y = SCREEN_WIDTH - 150.0, 300.0
     p2_speed = 4.4
-    p2_max_hp = 120
+    p2_max_hp = 12                     # hits: the duel launcher is armoured (2 hits ended a round in ~2 s)
     p2_hp = p2_max_hp
+    DUEL_LEVEL = 30                    # missile / drone strength in the duel (medium-range missiles)
+    DUEL_DRIVE = 2.2                   # launcher driving speed, px per frame (x1.8 when it sprints from a shot)
+    DUEL_MISSILE_RELOAD = 120          # frames between its missiles (2 s)
+    DUEL_DRONE_RELOAD = 240            # frames between its drones (4 s)
+    DUEL_MAX_MISSILES = 3              # at most this many of its missiles in the sky at once
+    DUEL_MAX_DRONES = 3
+    duel = {"missiles": [], "missile_cd": 90, "drone_cd": 150, "vx": 0.0, "want_missile": False, "want_drone": False,
+            "laser_frames": 0}
     p2_angle = 180.0
     p2_shoot_cd = 0
     p2_flash_timer = 0
@@ -1415,7 +1452,7 @@ async def main():
         autogun["rounds"].clear()
         n = drone_launcher_count(lvl)
         for i in range(n):
-            x = (i + 0.5) * SCREEN_WIDTH / n + random.uniform(-12, 12)
+            x = (i + 0.75) * SCREEN_WIDTH / n        # three quarters into each stretch (trucks start in the middle)
             drone_launchers.append(DroneLauncher(x, drones_per_launcher(lvl), first_delay=90 + i * 45 + random.randint(0, 60),
                                                  missile_delay=480 + i * 90 + random.randint(0, 180),
                                                  has_missile=lvl >= DRONE_MISSILE_LEVEL,
@@ -1443,7 +1480,7 @@ async def main():
         enemies = []
         is_boss = (lvl % 10 == 0)
         if is_boss:
-            enemies.append(launch_missile(lvl, SILO_SITE, 60, is_boss=True))
+            enemies.append(launch_missile(lvl, boss_site(), 60, is_boss=True))
         else:
             num = min(4, 1 + (lvl // 15))
             spin = random.uniform(0, 2 * math.pi)
@@ -1536,6 +1573,58 @@ async def main():
         blasts.append([x, y, 0, 0.5])
         SFX.snd_hit.play()
         total_score += DRONE_KILL_SCORE
+
+    def update_drones_and_autogun(jcx, jcy, tx, ty, hp):
+        """Drones home on (tx, ty) -- the jet, or where camouflage / stealth left it -- and blow up against the jet
+        at (jcx, jcy) (HP damage; the shield blocks). The jet's protective AUTO-GUN fires by itself at the nearest
+        drone inside its range. Shared by the campaign and the duel. Returns the jet's HP."""
+        # DRONES: subsonic, home on the jet (or where camouflage / stealth left it), blow up against it
+        for d in drones[:]:
+            d.update(tx, ty)
+            if d.y >= GROUND_Y - 8:              # spent drone glided into the ground (or flew into it)
+                drones.remove(d)
+                blasts.append([d.x, GROUND_Y - 8, 0, 0.5])
+                SFX.snd_explode.play()
+                continue
+            if d.x < -80 or d.x > SCREEN_WIDTH + 80 or d.y < -300:
+                drones.remove(d)
+                continue
+            if hp > 0 and p1_stealth_timer == 0 and not d.expired and \
+                    math.hypot(d.x - jcx, d.y - jcy) < DRONE_HIT_RADIUS + 30 * jet_size_factor(jcy):
+                drones.remove(d)
+                blasts.append([d.x, d.y, 0, 0.7])
+                SFX.snd_explode.play()
+                if p1_guard:
+                    floating_texts.append(["BLOCKED!", jcx - 20, jcy - 40, (0, 255, 220), 20])
+                else:
+                    hp = max(0, hp - d.dmg)
+                    floating_texts.append([f"DRONE HIT -{d.dmg}", jcx - 30, jcy - 40, (255, 90, 90), 30])
+
+        # PROTECTIVE AUTO-GUN: fires by itself, all round, at the nearest drone inside AUTOGUN_RANGE
+        if autogun["cd"] > 0:
+            autogun["cd"] -= 1
+        if autogun["firing"] > 0:
+            autogun["firing"] -= 1
+        if hp > 0 and autogun["cd"] == 0:
+            aim = autogun_pick(jcx, jcy, drones, rng=AUTOGUN_RANGE * pbuff())
+            if aim is not None:
+                autogun["rounds"].append({"x": jcx, "y": jcy, "vx": math.cos(aim) * AUTOGUN_SPEED,
+                                          "vy": math.sin(aim) * AUTOGUN_SPEED, "life": int(AUTOGUN_RANGE * 1.3 / AUTOGUN_SPEED)})
+                autogun["cd"] = round(AUTOGUN_COOLDOWN / pbuff())
+                autogun["firing"] = 20
+                SFX.snd_autogun.stop()           # restart, never stack into a drone
+                SFX.snd_autogun.play()
+        for r in autogun["rounds"][:]:
+            r["x"] += r["vx"]
+            r["y"] += r["vy"]
+            r["life"] -= 1
+            hit = next((d for d in drones if math.hypot(d.x - r["x"], d.y - r["y"]) < 14), None)
+            if hit:
+                kill_drone(hit, r["x"], r["y"])
+            if hit or r["life"] <= 0:
+                autogun["rounds"].remove(r)
+        return hp
+
 
     def draw_drone_launchers():
         for dl in drone_launchers:
@@ -1911,7 +2000,7 @@ async def main():
         save_control_modes(modes)
         SFX.snd_hit.play()
         if game_state in ("CAMPAIGN", "DUEL"):
-            name = {"jet": "JET", "missile": "DUEL MISSILE", "difficulty": "AI"}[which]
+            name = {"jet": "JET", "missile": "DUEL LAUNCHER", "difficulty": "AI"}[which]
             floating_texts.append([f"{name}: {modes[which]}", SCREEN_WIDTH // 2 - 50, 230, (255, 230, 120), 50])
             if which == "difficulty" and game_state == "CAMPAIGN":
                 floating_texts.append(["(from the next wave)", SCREEN_WIDTH // 2 - 70, 250, (200, 200, 210), 50])
@@ -1951,8 +2040,13 @@ async def main():
             if alive:
                 ln = min(alive, key=lambda ln: abs(ln["x"] - cx))
                 return ln["x"], GROUND_Y - 14
-        elif game_state == "DUEL" and p2_hp > 0 and not p2_is_burrowed:
-            return p2_x + 40, p2_y + 25
+        elif game_state == "DUEL":   # its missiles first, else the launcher on the ground
+            flying = [e for e in duel["missiles"] if ahead(e.x + e.width / 2, e.y + e.height / 2)]
+            if flying:
+                e = min(flying, key=lambda e: math.hypot(e.x + e.width / 2 - cx, e.y + e.height / 2 - cy))
+                return e.x + e.width / 2, e.y + e.height / 2
+            if p2_hp > 0 and ahead(p2_x, GROUND_Y - 14):
+                return p2_x, GROUND_Y - 14
         return None
 
     def finger_down(tx, ty, fid):
@@ -2246,8 +2340,11 @@ async def main():
                     p1_split_charges = round(2 * pbuff())
                     p1_power_tier = 1
                     p1_power_charge = 0.0
-                    p2_max_hp = 120
-                    p2_hp = p2_max_hp
+                    p2_hp = p2_max_hp                   # the armoured duel launcher
+                    duel["missiles"].clear()
+                    drones.clear()
+                    autogun["rounds"].clear()
+                    p2_x = SCREEN_WIDTH - 150.0
                     p2_decoys = 3
                     p2_power_tier = 1
                     p2_power_charge = 0.0
@@ -2304,32 +2401,15 @@ async def main():
                     p1_camo_cd = round(CAMO_COOLDOWN / pbuff())
                     p1_camo_x, p1_camo_y = p1_x + 50, p1_y + 40
                     SFX.snd_decoy.play()
-
-            # P2 Decoy in Duel
-            if game_state == "DUEL" and p2_decoys > 0:
-                if (event.type == pygame.KEYDOWN and event.key in (pygame.K_KP7, pygame.K_LEFTBRACKET)) or \
-                   (event.type == pygame.JOYBUTTONDOWN and ps_pad_p2 and event.joy == 1 and event.button == 4):
-                    p2_decoys -= 1
-                    clone_count = 6
-                    radius = 70
-                    for i in range(clone_count):
-                        angle = (2.0 * math.pi / clone_count) * i
-                        cx = p2_x + math.cos(angle) * radius
-                        cy = p2_y + math.sin(angle) * radius
-                        active_decoys.append({"x": cx, "y": cy, "life": 240, "type": "p2"})
-                    SFX.snd_decoy.play()
-                    floating_texts.append(["MISSILE HOLOGRAM DEPLOYED!", p2_x - 30, p2_y - 25, (200, 100, 255), 35])
-
-            # P2 Burrow in Duel
-            if game_state == "DUEL" and not p2_is_burrowed and p2_burrow_cd == 0:
-                if (event.type == pygame.KEYDOWN and event.key in (pygame.K_KP_ENTER, pygame.K_SLASH)) or \
-                   (event.type == pygame.JOYBUTTONDOWN and ps_pad_p2 and event.joy == 1 and event.button == 5):
-                    nearest = min(burrow_holes, key=lambda h: math.hypot(h[0] - (p2_x + 40), h[1] - (p2_y + 25)))
-                    if math.hypot(nearest[0] - (p2_x + 40), nearest[1] - (p2_y + 25)) < 110:
-                        p2_is_burrowed = True
-                        p2_burrow_timer = 90
-                        p2_burrow_cd = 240
-                        SFX.snd_burrow.play()
+            # P2 LAUNCHER (duel, player 2 / MANUAL): UP (or keypad 8) fires a missile, DOWN (keypad 2 / 5) sends a drone;
+            # a second game controller: button 0 missile, button 1 drone. Left / right drive it (in the duel loop).
+            if game_state == "DUEL" and modes["missile"] == "MANUAL" and p2_hp > 0:
+                if (event.type == pygame.KEYDOWN and event.key in (pygame.K_UP, pygame.K_KP8)) or \
+                   (event.type == pygame.JOYBUTTONDOWN and event.joy == 1 and event.button == 0):
+                    duel["want_missile"] = True
+                if (event.type == pygame.KEYDOWN and event.key in (pygame.K_DOWN, pygame.K_KP2, pygame.K_KP5)) or \
+                   (event.type == pygame.JOYBUTTONDOWN and event.joy == 1 and event.button == 1):
+                    duel["want_drone"] = True
 
             # ORDNANCE (1P, level 5+): G = next munition, R / right click = launch it.
             # FLIR POD (1P, level 10+): X = active scan on/off (drains its energy).
@@ -2378,9 +2458,7 @@ async def main():
             if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
                 set_fullscreen(not fullscreen["on"])
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                if game_state == "MODE_SELECT":
-                    set_fullscreen(False)          # Esc on the start screen: back to a window (to close it)
-                game_state = "MODE_SELECT"
+                game_state = "MODE_SELECT"         # Esc never leaves full screen (user: "start it in full screen always")
                 saved_data.update(load_save_data())
 
         if game_state == "CAMPAIGN":   # unlock messages from the last wave set-up
@@ -2462,16 +2540,16 @@ async def main():
             pygame.draw.rect(screen, (0, 210, 255), card2, 2, border_radius=12)
 
             duel_vs_ai = modes["missile"] == "AUTO"     # always on phones
-            screen.blit(big_font.render("DUEL vs AI" if duel_vs_ai else "2P DUEL (PVP)", True, (0, 220, 255)), (435 + XC, 168))
+            screen.blit(big_font.render("JET vs AI LAUNCHER" if duel_vs_ai else "JET vs LAUNCHER", True, (0, 220, 255)), (435 + XC, 168))
             lines2 = [
-                "You (Jet) vs AI Missile" if duel_vs_ai else "P1 (Jet) vs P2 (Missile)",
+                "You fly the jet vs an AI launcher" if duel_vs_ai else "P1 flies the jet, P2 drives the launcher",
                 "[YOU GET +15% IN EVERYTHING]:" if duel_vs_ai else "[EQUAL BALANCED COMBAT]:",
-                "- You 138 HP vs missile 120 HP" if duel_vs_ai else "- Equal 120 HP for both players",
-                "- P1: Press 'T' to split into 3 units",
-                "- P2 missile has no guns: ram the jet",
-                "- Jet lasers at tiers 3-5 (Press 'L')",
-                "- Camouflage [C] & Dogfight Autopilot",
-                "- P2 Burrow & Teleport Ambush",
+                "- Jet " + ("138" if duel_vs_ai else "120") + " HP; launcher: 12 hits",
+                "- Missiles & drones come only from it",
+                "- The launcher drives along the ground",
+                "- P2: arrows drive, UP missile, DOWN drone",
+                "- Jet: flares F, stealth V, camo C, squad T",
+                "- Wreck the armoured launcher to win",
                 "",
                 ">> PRESS '2' OR CIRCLE (O) <<",
             ]
@@ -2486,7 +2564,7 @@ async def main():
             keyname = {"keys": ("J", "K", "H"), "pad": ("SQUARE", "TRIANGLE", "L1"), "touch": ("", "", "")}[kind]
             for rect, label, mode, keyhint, good in (
                     (MODE_JET_BTN, "JET", modes["jet"], keyname[0], "AUTO"),
-                    (MODE_MSL_BTN, "DUEL MISSILE", modes["missile"], "PHONE" if MOBILE else keyname[1], "AUTO"),
+                    (MODE_MSL_BTN, "DUEL LAUNCHER", modes["missile"], "PHONE" if MOBILE else keyname[1], "AUTO"),
                     (MODE_DIFF_BTN, "AI", modes["difficulty"], keyname[2], "EASY")):
                 on = mode == good
                 hover = rect.collidepoint(mouse_pos) and not touch["on"]
@@ -2497,14 +2575,15 @@ async def main():
                 screen.blit(t, t.get_rect(center=rect.center))
             # what the switches mean right now, in plain words
             meaning = "  |  ".join((
-                "autopilot + auto-aim help you" if modes["jet"] == "AUTO" else "you fly & shoot yourself",
-                "duel vs the AI" if modes["missile"] == "AUTO" else "duel vs a friend",
+                ("autopilot flies, you fire" if MOBILE else "autopilot + auto-aim help you") if modes["jet"] == "AUTO"
+                else "you fly & shoot yourself",
+                "AI drives the launcher" if modes["missile"] == "AUTO" else "a friend drives the launcher",
                 "slower, simpler AI" if modes["difficulty"] == "EASY" else "full-strength AI"))
             t = font.render(meaning, True, (200, 210, 230))
             screen.blit(t, t.get_rect(center=(SCREEN_WIDTH // 2, 516)))
 
             pad_msg = "Game Controller Connected" if ps_pad_p1 else ("Touch Screen" if touch["on"] else "Keyboard Connected")
-            fs_tip = " | F11 = full screen / window" if desktop_fs else ""
+            fs_tip = " | F11 = window | Alt+F4 = close" if desktop_fs else ""
             t = font.render(f"Controller: {pad_msg} | Esc = menu{fs_tip}", True, (140, 150, 170))
             screen.blit(t, t.get_rect(center=(SCREEN_WIDTH // 2, 536)))
             if touch["on"]:
@@ -2612,6 +2691,10 @@ async def main():
                     game_state = "DUEL"
                     p1_hp = p1_max_hp
                     p2_hp = p2_max_hp
+                    duel["missiles"].clear()          # a fresh round: the sky is empty, the launcher reloads
+                    drones.clear()
+                    autogun["rounds"].clear()
+                    duel["missile_cd"], duel["drone_cd"], duel["vx"] = 90, 150, 0.0
 
                 reset_positions()
 
@@ -2620,12 +2703,6 @@ async def main():
             await asyncio.sleep(0)
             continue
 
-        # Stealth holes: only in the 2P duel, where P2's missile uses them to go underground
-        if game_state == "DUEL":
-            for hole in burrow_holes:
-                pygame.draw.circle(screen, (35, 10, 50), hole, 22)
-                pygame.draw.circle(screen, (160, 40, 255), hole, 22, 2)
-                pygame.draw.circle(screen, (10, 5, 20), hole, 16)
         # ground missile launchers
         if game_state == "CAMPAIGN":
             move_launchers(current_level % 10 == 0, campaign_enemies)
@@ -2694,8 +2771,8 @@ async def main():
                                 math.sin(e.heading) * e.speed_stat)
                                for e in campaign_enemies if not e.is_burrowed and e.launch_delay == 0]
                 else:
-                    threats = [(p2_x + 40, p2_y + 25, math.cos(math.radians(p2_angle)) * 4.0,
-                                math.sin(math.radians(p2_angle)) * 4.0)] if p2_hp > 0 and not p2_is_burrowed else []
+                    threats = [(e.x + e.width / 2, e.y + e.height / 2, math.cos(e.heading) * e.speed_stat,
+                                math.sin(e.heading) * e.speed_stat) for e in duel["missiles"]]
                 want_vx, want_vy = autopilot_velocity(p1_x + 50, p1_y + 40, actual_p1_speed, threats)
                 p1_vx += (want_vx - p1_vx) * 0.35
                 p1_vy += (want_vy - p1_vy) * 0.35
@@ -2752,7 +2829,8 @@ async def main():
             is_firing = (mouse_fire or touch["fire_ids"] or keys[pygame.K_SPACE] or pad_shoot) and not p1_guard
             # JET AUTO: while you aren't firing yourself, the guns aim at the nearest target in front of the nose
             # (missile, else launcher; P2's missile in the duel) and fire by themselves
-            if modes["jet"] == "AUTO" and not is_firing and not p1_guard:
+            # (never on phones -- user, 2026-10-03: "in mobile mode it automatically firing": there FIRE is the only trigger)
+            if modes["jet"] == "AUTO" and not is_firing and not p1_guard and not MOBILE and not touch["on"]:
                 tgt = touch_aim_target(center_p1_x, center_p1_y)
                 if tgt:
                     a = math.atan2(tgt[1] - center_p1_y, tgt[0] - center_p1_x)
@@ -2833,14 +2911,7 @@ async def main():
                                 s.laser_frames = 0
                                 damage_silo(s)
 
-                elif game_state == "DUEL" and p2_hp > 0 and not p2_is_burrowed:
-                    p2_hitbox = pygame.Rect(p2_x + 10, p2_y + 10, 70, 45)
-                    if p2_hitbox.colliderect(p1_dmg_box):
-                        p2_hp = 0   # one hit destroys P2's missile (user, 2026-10-03)
-                        p2_flash_timer = 2
-                        p1_power_charge += 1.5
-                        if random.random() < 0.3:
-                            hit_sparks.append([p2_x + 40, p2_y + 25, random.uniform(-4, 4), random.uniform(-4, 4), 3, current_wpn["color_outer"], 12])
+                # (in the duel the beam's hits on the launcher, its missiles and drones are counted in the duel loop)
 
                 if p1_power_charge >= 100.0 and p1_power_tier < 5:
                     p1_power_charge = 0.0
@@ -2889,7 +2960,7 @@ async def main():
                     ex, ey = e.x + e.width / 2, e.y + e.height / 2
                     fl = min(flares, key=lambda d: math.hypot(d["x"] - ex, d["y"] - ey))
                     tx, ty = fl["x"], fl["y"]
-                e.update(burrow_holes, tx, ty, SCREEN_WIDTH, SCREEN_HEIGHT, threats=p1_bullets)
+                e.update([], tx, ty, SCREEN_WIDTH, SCREEN_HEIGHT, threats=p1_bullets)
 
             # a missile that leaves the sky (overshot past an edge) or hits the ground (dived into it,
             # or fell there after its 20 s) is out of the fight; its launcher (or another one if it is
@@ -3027,6 +3098,7 @@ async def main():
                     e = MissileEnemy(current_level, mutator=active_mutator if current_level > 100 else "NONE",
                                      launch_x=s.x, ground_y=GROUND_Y, system=s.system, difficulty=modes["difficulty"])
                     e.silo = s
+                    e.y = GROUND_Y - e.height / 2 - 2   # rises out of the hatch, not out of thin air above it
                     campaign_enemies.append(e)
                     SFX.snd_ignite.play()
                     floating_texts.append(["SILO LAUNCH!", s.x - 40, GROUND_Y - 60, (255, 120, 60), 40])
@@ -3054,6 +3126,9 @@ async def main():
             # all hold while the jet is in stealth
             top_speed = p1_speed * (1.35 if active_mutator == "HYPER SPEED STORM" else 1.0) * jet_pace(current_level)
             for dl in drone_launchers:
+                if any(ln["alive"] and abs(ln["x"] - dl.x) < 52 and (ln["x"] - dl.x) * dl.vx > 0 for ln in launchers):
+                    dl.vx = -dl.vx                   # turns back before it would drive into a truck
+                dl.move()
                 want_drone, want_missile = dl.update(hold=p1_stealth_timer > 0,
                                                      hold_missile=len(campaign_enemies) >= MAX_WAVE_MISSILES)
                 if want_drone:
@@ -3067,51 +3142,7 @@ async def main():
                     e.silo = dl          # if it falls to the ground, this launcher gets the shot back
                     campaign_enemies.append(e)
 
-            # DRONES: subsonic, home on the jet (or where camouflage / stealth left it), blow up against it
-            for d in drones[:]:
-                d.update(p1_target_x, p1_target_y)
-                if d.y >= GROUND_Y - 8:              # spent drone glided into the ground (or flew into it)
-                    drones.remove(d)
-                    blasts.append([d.x, GROUND_Y - 8, 0, 0.5])
-                    SFX.snd_explode.play()
-                    continue
-                if d.x < -80 or d.x > SCREEN_WIDTH + 80 or d.y < -300:
-                    drones.remove(d)
-                    continue
-                if p1_hp > 0 and p1_stealth_timer == 0 and not d.expired and \
-                        math.hypot(d.x - center_p1_x, d.y - center_p1_y) < DRONE_HIT_RADIUS + 30 * jet_size_factor(center_p1_y):
-                    drones.remove(d)
-                    blasts.append([d.x, d.y, 0, 0.7])
-                    SFX.snd_explode.play()
-                    if p1_guard:
-                        floating_texts.append(["BLOCKED!", center_p1_x - 20, center_p1_y - 40, (0, 255, 220), 20])
-                    else:
-                        p1_hp = max(0, p1_hp - d.dmg)
-                        floating_texts.append([f"DRONE HIT -{d.dmg}", center_p1_x - 30, center_p1_y - 40, (255, 90, 90), 30])
-
-            # PROTECTIVE AUTO-GUN: fires by itself, all round, at the nearest drone inside AUTOGUN_RANGE
-            if autogun["cd"] > 0:
-                autogun["cd"] -= 1
-            if autogun["firing"] > 0:
-                autogun["firing"] -= 1
-            if p1_hp > 0 and autogun["cd"] == 0:
-                aim = autogun_pick(center_p1_x, center_p1_y, drones, rng=AUTOGUN_RANGE * pbuff())
-                if aim is not None:
-                    autogun["rounds"].append({"x": center_p1_x, "y": center_p1_y, "vx": math.cos(aim) * AUTOGUN_SPEED,
-                                              "vy": math.sin(aim) * AUTOGUN_SPEED, "life": int(AUTOGUN_RANGE * 1.3 / AUTOGUN_SPEED)})
-                    autogun["cd"] = round(AUTOGUN_COOLDOWN / pbuff())
-                    autogun["firing"] = 20
-                    SFX.snd_autogun.stop()           # restart, never stack into a drone
-                    SFX.snd_autogun.play()
-            for r in autogun["rounds"][:]:
-                r["x"] += r["vx"]
-                r["y"] += r["vy"]
-                r["life"] -= 1
-                hit = next((d for d in drones if math.hypot(d.x - r["x"], d.y - r["y"]) < 14), None)
-                if hit:
-                    kill_drone(hit, r["x"], r["y"])
-                if hit or r["life"] <= 0:
-                    autogun["rounds"].remove(r)
+            p1_hp = update_drones_and_autogun(center_p1_x, center_p1_y, p1_target_x, p1_target_y, p1_hp)
 
             # a downed jet always loses the round, even when the missile that got it was the
             # wave's last one (checking "wave cleared" first used to count that as a win)
@@ -3122,134 +3153,170 @@ async def main():
                 handle_round_conclusion("P1", "CAMPAIGN")
 
         # ======================================================================
-        # 2-PLAYER DUEL LOGIC
+        # 2-PLAYER DUEL: JET vs LAUNCHER
         # ======================================================================
         elif game_state == "DUEL":
-            center_p2_x = p2_x + 40
-            center_p2_y = p2_y + 25
-
-            if p2_hp > 0:
-                if p2_burrow_cd > 0:
-                    p2_burrow_cd -= 1
-
-                if p2_is_burrowed:
-                    p2_burrow_timer -= 1
-                    if p2_burrow_timer <= 0:
-                        dest = random.choice(burrow_holes)
-                        p2_x = dest[0] - 40
-                        p2_y = dest[1] - 25
-                        p2_is_burrowed = False
-                        SFX.snd_burrow.play()
-                else:
-                    p2_pad_x = ps_pad_p2.get_axis(0) if ps_pad_p2 and abs(ps_pad_p2.get_axis(0)) > 0.15 else 0.0
-                    p2_pad_y = ps_pad_p2.get_axis(1) if ps_pad_p2 and abs(ps_pad_p2.get_axis(1)) > 0.15 else 0.0
-
-                    p2_vx, p2_vy = 0.0, 0.0
-                    if keys[pygame.K_LEFT] or keys[pygame.K_KP4] or p2_pad_x < -0.3:
-                        p2_vx -= p2_speed
-                    if keys[pygame.K_RIGHT] or keys[pygame.K_KP6] or p2_pad_x > 0.3:
-                        p2_vx += p2_speed
-                    if keys[pygame.K_UP] or keys[pygame.K_KP8] or p2_pad_y < -0.3:
-                        p2_vy -= p2_speed
-                    if keys[pygame.K_DOWN] or keys[pygame.K_KP5] or keys[pygame.K_KP2] or p2_pad_y > 0.3:
-                        p2_vy += p2_speed
-
-                    if keys[pygame.K_RCTRL] or keys[pygame.K_KP_PERIOD] or (ps_pad_p2 and ps_pad_p2.get_button(5)):
-                        p2_vx *= 1.6
-                        p2_vy *= 1.6
-
-                    # MISSILE AUTO: the computer flies P2's missile while player 2 isn't steering: it heads for
-                    # the jet (or the nearest flare / where camouflage or stealth left the jet), weaving, and
-                    # dives into a nearby hole when the jet's shots come close
-                    if modes["missile"] == "AUTO" and not (p2_vx or p2_vy):
-                        dfx_duel = difficulty_factors(modes["difficulty"])
-                        ai_fl =[d for d in active_decoys if d["type"] == "flare"]
-                        if ai_fl:
-                            fl = min(ai_fl, key=lambda d: math.hypot(d["x"] - center_p2_x, d["y"] - center_p2_y))
-                            ax, ay = fl["x"], fl["y"]
-                        elif p1_stealth_timer > 0:
-                            ax, ay = p1_stealth_x, p1_stealth_y
-                        elif p1_camo_timer > 0:
-                            ax, ay = p1_camo_x, p1_camo_y
-                        else:
-                            ax, ay = center_p1_x, center_p1_y
-                            if dfx_duel["duel_lead"]:   # NORMAL thinks ahead: heads for where the jet will be
-                                t_hit = min(60.0, math.hypot(ax - center_p2_x, ay - center_p2_y) / max(1.0, p2_speed))
-                                ax += p1_vx * t_hit * 0.7
-                                ay += p1_vy * t_hit * 0.7
-                        ai_speed = p2_speed * dfx_duel["duel_speed"]
-                        a = math.atan2(ay - center_p2_y, ax - center_p2_x) + math.sin(pygame.time.get_ticks() * 0.004) * 0.6
-                        p2_vx, p2_vy = math.cos(a) * ai_speed, math.sin(a) * ai_speed
-                        # it notices some of the shots (60% NORMAL, 25% EASY; decided once per shot), inside 160 px
-                        threats_in = [b for b in p1_bullets if math.hypot(b["x"] - center_p2_x, b["y"] - center_p2_y) < 160 and
-                                      (center_p2_x - b["x"]) * b["vx"] + (center_p2_y - b["y"]) * b["vy"] > 0 and
-                                      b.setdefault("p2_sees", random.random() < dfx_duel["duel_sees"])]
-                        if threats_in:   # sidestep: dart across the nearest shot's path, away from its line
-                            b = min(threats_in, key=lambda b: math.hypot(b["x"] - center_p2_x, b["y"] - center_p2_y))
-                            bl = math.hypot(b["vx"], b["vy"]) or 1.0
-                            px, py = -b["vy"] / bl, b["vx"] / bl
-                            if (center_p2_x - b["x"]) * px + (center_p2_y - b["y"]) * py < 0:
-                                px, py = -px, -py
-                            p2_vx, p2_vy = px * ai_speed * 1.5, py * ai_speed * 1.5
-                        incoming = any(math.hypot(b["x"] - center_p2_x, b["y"] - center_p2_y) < 120 for b in threats_in)
-                        if incoming and p2_burrow_cd == 0 and dfx_duel["duel_burrow"]:
-                            hole = min(burrow_holes, key=lambda h: math.hypot(h[0] - center_p2_x, h[1] - center_p2_y))
-                            if math.hypot(hole[0] - center_p2_x, hole[1] - center_p2_y) < 110:
-                                p2_is_burrowed = True
-                                p2_burrow_timer = 90
-                                p2_burrow_cd = 240
-                                SFX.snd_burrow.play()
-
-                    p2_x += p2_vx
-                    p2_y += p2_vy
-                    p2_x = max(10, min(SCREEN_WIDTH - 90, p2_x))
-                    p2_y = max(55, min(GROUND_Y - 60, p2_y))
-
-                    aim_target_x = center_p1_x
-                    aim_target_y = center_p1_y
-                    duel_flares = [d for d in active_decoys if d["type"] == "flare"]
-                    if duel_flares:
-                        fl = min(duel_flares, key=lambda d: math.hypot(d["x"] - center_p2_x, d["y"] - center_p2_y))
-                        aim_target_x, aim_target_y = fl["x"], fl["y"]
-                    elif p1_camo_timer > 0:
-                        aim_target_x, aim_target_y = p1_camo_x, p1_camo_y
-
-                    p2_dx = aim_target_x - center_p2_x
-                    p2_dy = aim_target_y - center_p2_y
-                    p2_angle = math.degrees(math.atan2(p2_dy, p2_dx))
-
+            dfx_duel = difficulty_factors(modes["difficulty"])
+            ai_launcher = modes["missile"] == "AUTO"
+            reload_mult = 1.6 if modes["difficulty"] == "EASY" and ai_launcher else 1.0
+            if duel["missile_cd"] > 0:
+                duel["missile_cd"] -= 1
+            if duel["drone_cd"] > 0:
+                duel["drone_cd"] -= 1
             if p2_flash_timer > 0:
                 p2_flash_timer -= 1
+            duel_target_x, duel_target_y = center_p1_x, center_p1_y   # where its missiles and drones head
+            if p1_stealth_timer > 0:
+                duel_target_x, duel_target_y = p1_stealth_x, p1_stealth_y
+            elif p1_camo_timer > 0:
+                duel_target_x, duel_target_y = p1_camo_x, p1_camo_y
 
-            # P2's missile has no guns: like the AI missiles it wins by reaching the jet (proximity fuse).
-            # Against a raised shield it blows itself up for nothing, and the jet wins the round.
-            p2_hitbox = pygame.Rect(p2_x + 10, p2_y + 10, 70, 45)
-            if p2_hp > 0 and p1_hp > 0 and not p2_is_burrowed and p1_stealth_timer == 0 and \
-                    math.hypot(p2_x + 40 - center_p1_x, p2_y + 25 - center_p1_y) < jet_fuse_radius(center_p1_y):
-                blasts.append([p2_x + 40, p2_y + 25, 0, 1.0])
-                SFX.snd_explode.play()
-                if p1_guard:
-                    floating_texts.append(["BLOCKED!", center_p1_x - 20, center_p1_y - 40, (0, 255, 220), 20])
-                    p2_hp = 0
+            # on phones it stays in the open, between the thumb stick and the button cluster
+            duel_lo, duel_hi = (230.0, SCREEN_WIDTH - 270.0) if touch["on"] else (40.0, SCREEN_WIDTH - 40.0)
+            if p2_hp > 0:
+                # DRIVE: player 2 with left / right (or a 2nd controller's stick); AUTO: the computer keeps away from
+                # under the jet's nose and dodges incoming shots, never leaving the ground
+                p2_pad_x = ps_pad_p2.get_axis(0) if ps_pad_p2 and abs(ps_pad_p2.get_axis(0)) > 0.3 else 0.0
+                drive = 0.0
+                if not ai_launcher:
+                    if keys[pygame.K_LEFT] or keys[pygame.K_KP4] or p2_pad_x < 0:
+                        drive -= 1.0
+                    if keys[pygame.K_RIGHT] or keys[pygame.K_KP6] or p2_pad_x > 0:
+                        drive += 1.0
                 else:
-                    p1_hp = 0
+                    jet_dir = 1.0 if p1_vx >= 0 else -1.0
+                    in_front = (p2_x - center_p1_x) * jet_dir > 0
+                    want_x = center_p1_x - jet_dir * 260          # sit behind the jet, out of its forward guns
+                    if in_front and abs(p2_x - center_p1_x) < 320:
+                        want_x = p2_x + jet_dir * 200              # the jet is heading for it: drive away
+                    # reads where each shot will come down; if it would land on the truck, it sprints out of the way
+                    # (it notices 60% of the shots on NORMAL, 25% on EASY -- decided once per shot)
+                    sprint = 1.0
+                    threats = []
+                    for b in p1_bullets:
+                        if b["vy"] <= 0.5:
+                            continue
+                        land_x = b["x"] + b["vx"] * (GROUND_Y - 14 - b["y"]) / b["vy"]
+                        if abs(land_x - p2_x) < 55 and b.setdefault("p2_sees", random.random() < dfx_duel["duel_sees"]):
+                            threats.append(land_x)
+                    if threats:
+                        land_x = min(threats, key=lambda lx: abs(lx - p2_x))
+                        want_x = p2_x + (140 if p2_x >= land_x else -140)
+                        if want_x < duel_lo or want_x > duel_hi:          # cornered: dodge the other way
+                            want_x = p2_x - (want_x - p2_x)
+                        sprint = 1.8
+                    want_x = max(duel_lo, min(duel_hi, want_x))
+                    if abs(want_x - p2_x) > 8:
+                        drive = 1.0 if want_x > p2_x else -1.0
+                    drive *= dfx_duel["duel_speed"] * sprint
+                    if duel["missile_cd"] == 0 and p1_stealth_timer == 0:
+                        duel["want_missile"] = True
+                    if duel["drone_cd"] == 0 and p1_stealth_timer == 0:
+                        duel["want_drone"] = True
+                duel["vx"] += (drive * DUEL_DRIVE - duel["vx"]) * 0.2     # a heavy truck: it speeds up and brakes
+                p2_x = max(duel_lo, min(duel_hi, p2_x + duel["vx"]))
 
+                # FIRE: missiles and drones only ever leave the launcher (user, 2026-10-03)
+                if duel["want_missile"] and duel["missile_cd"] == 0 and len(duel["missiles"]) < DUEL_MAX_MISSILES:
+                    e = MissileEnemy(DUEL_LEVEL, launch_x=p2_x, ground_y=GROUND_Y, difficulty=modes["difficulty"])
+                    duel["missiles"].append(e)
+                    duel["missile_cd"] = int(DUEL_MISSILE_RELOAD * reload_mult)
+                    SFX.snd_ignite.play()
+                if duel["want_drone"] and duel["drone_cd"] == 0 and len(drones) < DUEL_MAX_DRONES:
+                    drones.append(Drone(p2_x, GROUND_Y - 26, drone_speed(p1_speed) * dfx_duel["drone_speed"], DUEL_LEVEL,
+                                        dmg_factor=dfx_duel["drone_dmg"]))
+                    duel["drone_cd"] = int(DUEL_DRONE_RELOAD * reload_mult)
+                    SFX.snd_drone.play()
+            duel["want_missile"] = duel["want_drone"] = False
+
+            # its missiles: the same projectile rules as the campaign (30 deg/s, 20 s, proximity fuse, flares)
+            duel_flares = [d for d in active_decoys if d["type"] == "flare"]
+            for e in duel["missiles"][:]:
+                tx, ty = duel_target_x, duel_target_y
+                e.decoyed = bool(duel_flares)
+                if duel_flares:
+                    ex, ey = e.x + e.width / 2, e.y + e.height / 2
+                    fl = min(duel_flares, key=lambda d: math.hypot(d["x"] - ex, d["y"] - ey))
+                    tx, ty = fl["x"], fl["y"]
+                e.update([], tx, ty, SCREEN_WIDTH, SCREEN_HEIGHT)
+                mx, my = e.x + e.width / 2, e.y + e.height / 2
+                if e.age >= 35 and (my >= GROUND_Y - 12 or mx < -MISSILE_OFFSCREEN or mx > SCREEN_WIDTH + MISSILE_OFFSCREEN or my < -400):
+                    duel["missiles"].remove(e)
+                    if my >= GROUND_Y - 12:
+                        blasts.append([mx, GROUND_Y - 12, 0, 1.0])
+                        SFX.snd_explode.play()
+                    continue
+                caught = next((fl for fl in duel_flares if math.hypot(fl["x"] - mx, fl["y"] - my) < FLARE_CATCH), None)
+                if caught:
+                    duel["missiles"].remove(e)
+                    if caught in active_decoys:
+                        active_decoys.remove(caught)
+                    blasts.append([mx, my, 0, 0.8])
+                    SFX.snd_explode.play()
+                    continue
+                if p1_hp > 0 and p1_stealth_timer == 0 and not e.decoyed and not e.expired and \
+                        math.hypot(mx - center_p1_x, my - center_p1_y) <= jet_fuse_radius(center_p1_y) * e.fuse_factor:
+                    duel["missiles"].remove(e)
+                    blasts.append([mx, my, 0, 1.0])
+                    SFX.snd_explode.play()
+                    if p1_guard:
+                        floating_texts.append(["BLOCKED!", center_p1_x - 20, center_p1_y - 40, (0, 255, 220), 20])
+                    else:
+                        p1_hp = 0
+
+            # its drones and the jet's protective auto-gun (same as the campaign)
+            p1_hp = update_drones_and_autogun(center_p1_x, center_p1_y, duel_target_x, duel_target_y, p1_hp)
+
+            # the jet's shots: one hit downs a missile or a drone; the armoured launcher takes p2_max_hp hits
+            p2_rect = pygame.Rect(p2_x - 30, GROUND_Y - 30, 60, 32)
             for b in p1_bullets[:]:
-                b_rect = pygame.Rect(b["x"] - 6, b["y"] - 6, 12, 12)
-                if not p2_is_burrowed and p2_hitbox.colliderect(b_rect) and p2_hp > 0:
-                    p2_hp = 0   # one hit destroys P2's missile (user, 2026-10-03)
-                    p2_flash_timer = 3
+                b_rect = pygame.Rect(b["x"] - b["radius"], b["y"] - b["radius"], b["radius"] * 2, b["radius"] * 2)
+                hit_m = next((e for e in duel["missiles"] if e.rect.colliderect(b_rect)), None)
+                if hit_m:
+                    duel["missiles"].remove(hit_m)
                     p1_bullets.remove(b)
+                    blasts.append([hit_m.x + hit_m.width / 2, hit_m.y + hit_m.height / 2, 0, 0.7])
+                    SFX.snd_explode.play()
+                    continue
+                hit_d = next((d for d in drones if math.hypot(d.x - b["x"], d.y - b["y"]) < b["radius"] + 12), None)
+                if hit_d:
+                    p1_bullets.remove(b)
+                    kill_drone(hit_d, b["x"], b["y"])
+                    continue
+                if p2_hp > 0 and p2_rect.colliderect(b_rect):
+                    p1_bullets.remove(b)
+                    p2_hp -= 1
+                    p2_flash_timer = 6
                     SFX.snd_hit.play()
                     p1_power_charge += 24.0
                     if p1_power_charge >= 100.0 and p1_power_tier < 5:
                         p1_power_charge = 0.0
                         p1_power_tier += 1
+            if p1_laser_active:
+                beam = pygame.Rect(min(p1_laser_x, p1_laser_end_x) - 40, min(p1_laser_y, p1_laser_end_y) - 40,
+                                   abs(p1_laser_end_x - p1_laser_x) + 80, abs(p1_laser_end_y - p1_laser_y) + 80)
+                for e in duel["missiles"][:]:
+                    if e.rect.colliderect(beam):
+                        duel["missiles"].remove(e)
+                        blasts.append([e.x + e.width / 2, e.y + e.height / 2, 0, 0.7])
+                        SFX.snd_explode.play()
+                for d in drones[:]:
+                    if beam.collidepoint(d.x, d.y):
+                        kill_drone(d, d.x, d.y)
+                if p2_hp > 0 and p2_rect.colliderect(beam):
+                    duel["laser_frames"] += 1
+                    if duel["laser_frames"] >= 20:           # a held beam: one hit per 20 frames, like any launcher
+                        duel["laser_frames"] = 0
+                        p2_hp -= 1
+                        p2_flash_timer = 6
+                        SFX.snd_hit.play()
 
             if p1_hp <= 0:
                 p2_wins += 1
                 start_jet_crash("DUEL")
             elif p2_hp <= 0:
+                blasts.append([p2_x, GROUND_Y - 14, 0, 1.6])
+                SFX.snd_explode.play()
                 p1_wins += 1
                 handle_round_conclusion("P1", "DUEL")
 
@@ -3366,18 +3433,29 @@ async def main():
                 pygame.draw.circle(screen, (255, 230, 120), (int(center_p1_x), int(center_p1_y)), int(AUTOGUN_RANGE * pbuff()), 1)
             for e in campaign_enemies:
                 e.draw(screen)
-        elif game_state == "DUEL" and p2_hp > 0:
-            if not p2_is_burrowed:
-                # P2's missile grows from short range to hypersonic as its power tier rises
-                p2_body_w, p2_body_h = MISSILE_BODY_W * 1.6, MISSILE_H * 1.6
-                draw_missile_flame(screen, center_p2_x, center_p2_y, math.radians(p2_angle), p2_body_w, p2_body_h * 0.3,
-                                   5, pygame.time.get_ticks() // 16)
-                v_raw = pygame.transform.scale(create_missile_body(flash_white=(p2_flash_timer > 0), tier=5), (p2_body_w, p2_body_h))
-                v_rot = pygame.transform.rotate(v_raw, -p2_angle)
-                v_rect = v_rot.get_rect(center=(center_p2_x, center_p2_y))
-                screen.blit(v_rot, v_rect.topleft)
-            else:
-                screen.blit(font.render("[UNDERGROUND]", True, (200, 100, 255)), (center_p2_x - 45, center_p2_y - 30))
+        elif game_state == "DUEL":
+            draw_drones()
+            for r in autogun["rounds"]:
+                pygame.draw.line(screen, (255, 245, 170), (r["x"], r["y"]), (r["x"] - r["vx"] * 0.6, r["y"] - r["vy"] * 0.6), 2)
+            if autogun["firing"] > 0 and p1_hp > 0:
+                pygame.draw.circle(screen, (255, 230, 120), (int(center_p1_x), int(center_p1_y)), int(AUTOGUN_RANGE * pbuff()), 1)
+            for e in duel["missiles"]:
+                e.draw(screen)
+            if p2_hp > 0:   # P2's launcher truck on the ground: missile rail + drone ramp
+                lx = int(p2_x)
+                body = (255, 255, 255) if p2_flash_timer > 0 else (70, 80, 60)
+                cab_x = lx + 14 if duel["vx"] >= 0 else lx - 30
+                pygame.draw.rect(screen, body, (lx - 30, GROUND_Y - 16, 60, 14), border_radius=3)
+                pygame.draw.rect(screen, (90, 100, 75), (cab_x, GROUND_Y - 26, 16, 12), border_radius=2)
+                pygame.draw.line(screen, (120, 125, 110), (lx - 8, GROUND_Y - 16), (lx - 8, GROUND_Y - 58), 4)
+                pygame.draw.polygon(screen, (100, 106, 90), [(lx + 2, GROUND_Y - 16), (lx + 22, GROUND_Y - 30),
+                                                             (lx + 25, GROUND_Y - 26), (lx + 8, GROUND_Y - 16)])
+                for wx in (lx - 20, lx, lx + 20):
+                    pygame.draw.circle(screen, (25, 25, 28), (wx, GROUND_Y - 1), 6)
+                pygame.draw.rect(screen, (60, 20, 20), (lx - 25, GROUND_Y - 70, 50, 5))            # armour bar
+                pygame.draw.rect(screen, (90, 230, 90), (lx - 25, GROUND_Y - 70, int(50 * p2_hp / p2_max_hp), 5))
+                tag = tag_font.render("AI LAUNCHER" if modes["missile"] == "AUTO" else "P2 LAUNCHER", True, (0, 210, 255))
+                screen.blit(tag, tag.get_rect(center=(lx, GROUND_Y + 14)))
 
         draw_blasts()   # missile self-destruct fireballs, on top of the jet and missiles
 
@@ -3463,10 +3541,11 @@ async def main():
             draw_level_bar()
 
         elif game_state == "DUEL":
-            p2_col = (0, 210, 255) if p2_hp > 35 else (255, 60, 60)
-            p2_head = font.render("P2: AI MISSILE" if modes["missile"] == "AUTO" else "P2: MISSILE [MANUAL]", True, (0, 210, 255))
-            p2_num = num_font.render(f"HP: {int(p2_hp)} / {p2_max_hp}", True, p2_col)
-            p2_sub = font.render(f"NO GUNS - RAM THE JET | WINS: {p2_wins}", True, (200, 210, 230))
+            p2_col = (0, 210, 255) if p2_hp > 1 else (255, 60, 60)
+            p2_head = font.render("P2: AI LAUNCHER" if modes["missile"] == "AUTO" else "P2: LAUNCHER [MANUAL]", True, (0, 210, 255))
+            p2_num = num_font.render(f"HITS LEFT: {int(p2_hp)} / {p2_max_hp}", True, p2_col)
+            p2_sub = font.render(("FIRES MISSILES & DRONES" if modes["missile"] == "AUTO" else
+                                  "ARROWS DRIVE | UP MISSILE | DOWN DRONE") + f" | WINS: {p2_wins}", True, (200, 210, 230))
             screen.blit(p2_head, (SCREEN_WIDTH - p2_head.get_width() - 20, 12))
             screen.blit(p2_num, (SCREEN_WIDTH - p2_num.get_width() - 20, 30))
             screen.blit(p2_sub, (SCREEN_WIDTH - p2_sub.get_width() - 20, 56))

@@ -228,7 +228,10 @@ def test_jet_crashes_when_it_touches_the_ground():
 
 def test_drone_levels_and_launcher_counts():
     assert [main.drone_level(l) for l in (1, 2, 3, 20, 21, 100)] == [1, 2, 3, 20, 20, 20]
-    assert [main.drone_launcher_count(l) for l in (1, 2, 3, 10, 11, 60)] == [1, 2, 3, 10, 10, 10]
+    # one more launcher every 10 levels, for missile launchers and drone launchers alike (user, 2026-10-03)
+    steps = (1, 10, 11, 20, 21, 56, 90, 91, 100, 250)
+    assert [main.launcher_count(l) for l in steps] == [1, 1, 2, 2, 3, 6, 9, 10, 10, 10]
+    assert [main.drone_launcher_count(l) for l in steps] == [1, 1, 2, 2, 3, 6, 9, 10, 10, 10]
     assert [main.drones_per_launcher(l) for l in (1, 5, 6, 15, 20, 90)] == [1, 1, 2, 3, 4, 4]
 
 
