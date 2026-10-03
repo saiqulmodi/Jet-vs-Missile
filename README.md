@@ -18,12 +18,12 @@ The battlefield is as wide as your screen (16:9 computers, wider phones), so the
 
 | Key | Action |
 |---|---|
-| W A S D (or stick) | Fly. Let go and the autopilot keeps the jet flying: cruise, climb, dive, loops, barrel rolls and dogfight break turns |
+| W A S D (or stick) | Fly. The jet turns in arcs and never stalls; reverse and it flies a half loop. Climb out of the top of the screen to escape an attack: it is out of sight up there and comes back within 3 s. Let go and the autopilot keeps flying: cruise, climbs, dives, loops, rolls, break turns and sky escapes (AUTO) |
 | Mouse | Aim (the guns only fire forward, from the nose, up to 30 degrees off the flight path) |
 | Left click / Space | Fire |
 | E | Shield (a missile blowing up against it does no harm; energy runs down while held) |
 | Q | Repair kit (+HP) |
-| F | 10 flares: each missile chases its nearest flare instead of the jet and blows up on it |
+| F | Flares (12 against the AI, 10 in a two-player duel): each missile chases its nearest flare and blows up on it |
 | T | Triple jet squad |
 | C | Camouflage: the jet fades for 4 s and missiles lose their lock |
 | V | Stealth: 2 s invisible to missiles and launchers (no lock, fuses can't detect the jet, launchers hold fire); 8 s recharge |
@@ -34,7 +34,8 @@ The battlefield is as wide as your screen (16:9 computers, wider phones), so the
 | N / P, or click the level strip | Next / previous level |
 | Enter / Pause | Pause and resume |
 | Esc | Back to the mode menu |
-| Start screen: J / K / H | Jet AUTO-MANUAL / duel missile AUTO-MANUAL / AI EASY-NORMAL |
+| Start screen: click a name box | Type player 1 / player 2 names (Enter = done); each name keeps its own best level, high score and duel wins |
+| Start screen: J / K / H | Jet AUTO-MANUAL / duel launcher AUTO-MANUAL / AI EASY-NORMAL |
 | Start screen: 3 | Continue the campaign from your best level |
 
 **Phone / tablet** (turn it sideways): drag your thumb on the left half to fly, hold **FIRE** (it aims
@@ -52,8 +53,10 @@ Using a controller hides the touch buttons.
 The jet is drawn smaller the higher it flies (further from the launchers), and the missiles'
 detonation distance shrinks with it.
 
-Modes: **1P Campaign** (jet vs AI missiles, levels 1-100, then endless overdrive) and **2P Duel**
-(player 1 flies the jet, player 2 flies a hypersonic missile with no guns that wins by ramming the jet).
+Modes: **1P Campaign** (jet vs AI missiles, levels 1-100, then endless overdrive) and **Jet vs Launcher**
+(player 1 flies the jet; player 2 -- or the AI -- drives an armoured launcher along the ground and fires
+missiles and drones from it: arrows left/right drive, UP fires a missile, DOWN sends a drone; 12 hits wreck it).
+On phones the duel is always against the AI launcher.
 
 ## How the game grows
 
@@ -72,23 +75,25 @@ Modes: **1P Campaign** (jet vs AI missiles, levels 1-100, then endless overdrive
 - A missile turns at most 30 degrees per second, so a sharp turn can shake it off. It tracks the jet
   for 20 seconds, then falls and explodes on the ground, and its launcher fires the next one: to clear
   a wave you have to shoot the missiles down, lure them onto flares, or destroy their launchers.
-- Six launchers cover the ground; each is destroyed by its second hit (the boss silo too).
-  A missile is destroyed by a single hit.
+- Missile launchers on the ground: 1 at levels 1-10, one more every 10 levels, 10 from level 91. Each
+  drives in its own stretch and is destroyed by its second hit (the boss silo too). A missile is destroyed
+  by a single hit. Missiles and drones only ever come from launchers on the ground.
+  A destroyed launcher (truck or drone launcher) is rebuilt 2 seconds later.
 - Every 5 levels a nation's arsenal unlocks (Russia 5, Iran 10, China 15, Ukraine 20, North Korea 25,
   United States 30, United Kingdom 35, Germany 40): its two ground launchers join the enemy side (each
   labelled, with its own trail colour; multi-barrel launchers fire salvos) and its two jet munitions
   (air-to-air, air-to-ground, guided, glide or free-fall bombs) join your ordnance.
 - From level 10: heat-seeking missiles, the FLIR pod, and underground silos (2 at level 10, up to 10 from
   level 50) that stay invisible until they fire or your FLIR finds them.
-- Drones: from level 1, drone launchers on the ground (1 at level 1, one more each level, up to 10 from
-  level 10) send out attack drones (stronger each level up to drone level 20) and each also holds one
+- Drones: drone launchers drive on the ground too (1 at levels 1-10, one more every 10 levels, up to 10)
+  and send out attack drones (stronger each level up to drone level 20); from level 5 each also holds one
   missile. Drones fly at half the jet's speed and cost HP when they reach you. Your jet's protective
   auto-gun shoots by itself at any drone that comes within range.
 - Against the AI your jet gets +15% in everything (damage, reload, speed, HP, shield, flares, stealth,
   ammo, auto-gun range...); a 2-player duel between two people stays even.
 - Control modes on the start screen: **JET AUTO / MANUAL** (AUTO: autopilot + guns that aim and fire by
-  themselves; MANUAL: you fly and shoot everything) and **DUEL MISSILE AUTO / MANUAL** (AUTO: the computer
-  flies player 2's missile). Keys J / K. On phones the duel is always you vs the AI.
+  themselves -- on phones only FIRE fires; MANUAL: you fly and shoot everything) and **DUEL LAUNCHER AUTO /
+  MANUAL** (AUTO: the computer drives the launcher). Keys J / K. On phones the duel is always you vs the AI.
 - AI difficulty on the start screen: **EASY** (slower, simpler missiles and drones) or **NORMAL**.
 - Hints appear once when a new feature unlocks; the campaign card can continue from your best level.
 - All weapon and launcher names are the game's own "-M" versions (for example R-77-M, PATRIOT PAC-3-M).

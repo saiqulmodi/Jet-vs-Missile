@@ -14,15 +14,15 @@ Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2
   (missile and shot speed, x0.55 at level 1), `jet_pace` (x0.75 at level 1). Level 1 must feel slow.
 - **The jet always flies.** Hands off the keys, `autopilot_velocity` flies cruise/climb/dive/loop/roll and
   dogfight break turns; the sprite points along the flight path and banks/rolls.
-- **Launchers** (6, one stretch of ground each) are destroyed by their 2nd hit (boss silo too; user, 2026-10-03), rebuilt every wave.
+- **Launchers** (`launcher_count`: 1 at levels 1-10, +1 every 10 levels; one stretch of ground each) are destroyed by their 2nd hit (boss silo too; user, 2026-10-03), rebuilt every wave.
 - **Missiles never fire** (user, 2026-10-02: "either it hit or destroy itself near to target"). Their only
   attack is the proximity fuse (`FUSE_RADIUS` 60, boss x1.4): within range the missile blows itself up and the
   jet crashes (`p1_hp = 0`); a held shield absorbs the blast. The onboard-ammunition system and the
-  "Bullet Hell Surge" mutator were removed for this. In the 2P duel, P2's missile has no guns and wins by ramming.
+  "Bullet Hell Surge" mutator were removed for this. (The duel's old flying P2 missile is gone: the duel is now jet vs launcher, see below.)
 - After a crash, the next round's jet starts with full HP.
 - **Ground crash** (user, 2026-10-03: "let jet crashes when it hit the ground"): no floor bounce any more; when the
   jet's centre comes within `JET_GROUND_CLEARANCE` (12 px) of the ground line (`jet_hits_ground`) it crashes
-  (`p1_hp = 0`, shield doesn't help), campaign and duel. The top edge still bounces; the autopilot pulls up near the ground.
+  (`p1_hp = 0`, shield doesn't help), campaign and duel. The top edge is open (sky escape, below); the autopilot pulls up near the ground.
 - **Stealth key V** (user, 2026-10-02): 2 s (`STEALTH_DURATION`) invisible to missiles and launchers: missiles fly
   to the last seen spot, the proximity fuse ignores the jet (also P2 in the duel), missiles on launchers and
   RELOAD launches wait; 8 s recharge from activation. Separate from camouflage C (4 s fade, fuses still work).
@@ -40,17 +40,16 @@ Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2
 
 - **Guns fire forward only** (user, 2026-10-02: "no fire toward back"): shots and lasers leave the nose, aim clamped
   to `FIRE_CONE` (30 deg) around the flight direction; phone auto-aim only picks targets inside the cone.
-- **F = 10 flares** (user, 2026-10-02, replaces the 8 mirage jets): `FLARE_COUNT` flares fan out behind the jet,
+- **F = 10 flares** (user, 2026-10-02, replaces the 8 mirage jets; x1.15 = 12 vs the AI): `FLARE_COUNT` flares fan out behind the jet,
   slow and sink for `FLARE_LIFE` (4 s). Every missile chases its nearest flare (`e.decoyed`, its fuse then ignores
   the jet) and blows up within `FLARE_CATCH` of it, no points.
 
 - **Missiles only come from launchers** (user, 2026-10-02): the old radar-cloak (missile vanishes at a purple
-  hole and reappears at another) is removed; the purple holes are drawn only in the 2P duel, where P2's
-  burrow ambush uses them. Test: `test_missiles_never_vanish_or_teleport`.
+  hole and reappears at another) is removed (the duel's burrow holes went with the old P2 missile). Test: `test_missiles_never_vanish_or_teleport`.
 
 - **One hit destroys a missile** (user, 2026-10-03), bosses included: a jet bullet or the laser touching it
   sets `e.hp = 0`. Only an active ECM pulse stops the hit (bullets bounce, the laser is jammed). Launchers
-  need 2 hits. In the 2P duel, one hit (bullet or laser) also destroys P2's missile.
+  need 2 hits (the armoured duel launcher: `p2_max_hp` 12).
 
 - **Missile flight** (user, 2026-10-03): turn rate `MISSILE_TURN_DEG_PER_S` = 30 deg/s for every class
   (edge bounces excepted); after `MISSILE_FLIGHT_FRAMES` (20 s) a missile `expired`: no tracking, no fuse,
@@ -81,12 +80,12 @@ Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2
   - Controller (user, 2026-10-03): `PAD_ORD_BUTTON` 7 (the only free button: R2 in browsers, Start on desktop
     Xbox pads). Tap = launch (fires on release); hold + d-pad left/right = previous/next munition, hold + d-pad up =
     FLIR. Without it held the d-pad keeps its old jobs.
-  - `HUMAN_VS_AI_BUFF` 1.15 (damage + gun/ordnance reload) in the campaign only; the 2P duel stays 0%.
+  - `HUMAN_VS_AI_BUFF` 1.15 vs the computer (all aspects, see below); a human-vs-human duel stays 0%.
   - Missile rules above are unchanged (30 deg/s, 20 s, never fire, one hit kills). Silo missiles that hit the ground
     give their silo its shot back instead of launching from a truck.
-- **Drones** (user, 2026-10-03, 1P campaign only): `drone_level` 1..20 (= game level, capped at 20; drones per
-  launcher `drones_per_launcher` 1-4), `drone_launcher_count` 1..10 (= game level, capped at 10). Each fixed
-  `DroneLauncher` sends its drones one by one and also carries 1 missile (`e.silo = dl`, given back if it falls).
+- **Drones** (user, 2026-10-03; campaign, and from the duel launcher): `drone_level` 1..20 (= game level, capped at 20;
+  drones per launcher `drones_per_launcher` 1-4), `drone_launcher_count` 1 at levels 1-10, +1 every 10 levels. Each
+  `DroneLauncher` drives in its stretch, sends its drones one by one and from level 5 also carries 1 missile (`e.silo = dl`, given back if it falls).
   `Drone` speed = half the jet's top speed (`DRONE_SPEED_FACTOR`), 60 deg/s turns, 25 s fuel then glides down; on
   contact it costs HP (`DRONE_HIT_DMG` x level_power), shield blocks. Guns/laser/ordnance kill drones in one hit;
   drone launchers take 2 hits. Protective AUTO-GUN (`autogun_pick`): fires by itself, all round, with lead, at the
@@ -154,6 +153,21 @@ Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2
   P2 holograms are gone. Drones/auto-gun shared via `update_drones_and_autogun`. Campaign drone launchers drive too
   (trucks and drone launchers turn back before touching). On phones the duel launcher stays between stick and buttons.
 - **Stratos boxes**: the user can have one box per game; Squirrel vs Viper restored in `games/saiqulmodi-squirrel-vs-viper/`.
+- **Aerobatic flight + sky escape** (user, 2026-10-03): steered, the jet turns at `JET_TURN_PER_FRAME` and keeps its
+  speed (`aerobatic_heading`; a reversal is a half loop, split-S near the top) -- no more skidding stop. It may fly out
+  of the top of the screen (`sky_esc`): out of sight (missiles/drones head for where it vanished, fuses ignore it);
+  after `SKY_RETURN` frames it dives back by itself (`sky_esc["ret"]` overrides keys and autopilot) so it is back
+  within 3 s (`SKY_MAX_FRAMES` 180; measured max 129 frames holding UP); `SKY_CEILING` caps the climb. The autopilot
+  uses an "escape" climb now and then (`esc_cd` 10 s). The old top-edge bounce is gone; side edges still bounce.
+- **Player names** (user, 2026-10-03): two name boxes on the start screen (click/tap; phones use the browser's text
+  prompt), saved in save.json `names`; per-name records `players` (high score, best level, duel wins) via
+  `record_result`; the first rename of "PLAYER 1" takes over the old global record. Continue uses player 1's best.
+  While a name is being typed no other key handler runs. HUD / round text use the names (P2 = "AI" on AUTO).
+- **Launchers are rebuilt** (user, 2026-10-03: "allow 2 seconds time gap to revive again after destroying launchers,
+  including drone launchers"): `LAUNCHER_REVIVE_FRAMES` 120. A destroyed truck comes back with full armour (its RELOADs
+  stay lost; its riding missiles are gone); a drone launcher (`destroy` / `tick_revive`) comes back with the drones /
+  missile it had left, and counts as pending while rebuilding. Wrecks show "REBUILD n.ns". Not silos, not the duel
+  launcher (wrecking it wins the round).
 - **Online 1v1 / 2v2: later** (user, 2026-10-03: "keep online 1vs1,2vs2 for future"). Not built. Plan when asked:
   server-authoritative simulation at 60 Hz, clients send inputs only, server sends snapshots at 20 Hz, clients
   interpolate 100 ms behind and predict their own jet; symmetric rules (`human_buff` = 1.0).

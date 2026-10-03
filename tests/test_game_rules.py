@@ -320,6 +320,54 @@ def test_level_1_drone_launchers_carry_no_missile():
     assert main.DRONE_MISSILE_LEVEL == 5
 
 
+def test_aerobatic_turn_keeps_turn_limit_and_reverses_with_a_half_loop():
+    # asked to reverse (facing right, want left) low in the sky: the nose goes UP (screen y points down)
+    h = main.aerobatic_heading(0.0, math.pi, 400)
+    assert -main.JET_TURN_PER_FRAME - 1e-9 <= h < 0
+    # near the top: it goes down through the half loop instead
+    assert 0 < main.aerobatic_heading(0.0, math.pi, 100) <= main.JET_TURN_PER_FRAME + 1e-9
+    # a full reversal keeps turning the same way until it faces the new direction
+    head, steps = 0.0, 0
+    while abs(main.angle_diff(math.pi, head)) > 1e-6 and steps < 200:
+        new = main.aerobatic_heading(head, math.pi, 400)
+        assert main.angle_diff(new, head) <= 0          # always nose-up, never flips back
+        head, steps = new, steps + 1
+    assert steps * main.JET_TURN_PER_FRAME >= math.pi - 1e-6   # it flew the whole half loop, no instant flip
+
+
+def test_sky_escape_returns_within_3_seconds():
+    assert main.SKY_RETURN < main.SKY_MAX_FRAMES == 180
+    assert main.SKY_CEILING < 0
+
+
+def test_player_names_keep_their_own_records(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(main, "SAVE_FILE", tmp_path / "save.json")
+    (tmp_path / "save.json").write_text(json.dumps({"high_score": 45060, "max_level_reached": 56}))
+    assert main.load_player_names() == ["PLAYER 1", "PLAYER 2"]
+    assert main.player_record("PLAYER 1")["best_level"] == 56          # the record from before names existed
+    main.save_player_names(["Saiqul!!", "PLAYER 2"], old_p1="PLAYER 1")  # first rename: the record moves with it
+    assert main.load_player_names() == ["SAIQUL", "PLAYER 2"]
+    assert main.player_record("SAIQUL") == {"high_score": 45060, "best_level": 56, "wins": 0}
+    main.record_result("SAIQUL", score=100, level=3, win=True)
+    main.record_result("SAIQUL", score=50000, level=60)
+    main.record_result("PLAYER 2", win=True)
+    assert main.player_record("SAIQUL") == {"high_score": 50000, "best_level": 60, "wins": 1}
+    assert main.player_record("PLAYER 2")["wins"] == 1
+    assert main.clean_name("  ", "PLAYER 1") == "PLAYER 1"
+    assert len(main.clean_name("x" * 40, "P")) == main.MAX_NAME_LEN
+
+
+def test_destroyed_drone_launcher_is_rebuilt_after_2_seconds():
+    dl = main.DroneLauncher(200, drones=3, first_delay=999, missile_delay=999)
+    dl.destroy()
+    assert not dl.alive and dl.pending                       # still owes its drones: the wave waits
+    back = [dl.tick_revive() for _ in range(main.LAUNCHER_REVIVE_FRAMES)]
+    assert back[-1] is True and not any(back[:-1])            # exactly 2 s later
+    assert dl.alive and dl.hp == dl.max_hp and dl.drones_left == 3
+    assert main.LAUNCHER_REVIVE_FRAMES == 120
+
+
 def test_missile_gives_up_after_20_seconds_and_falls():
     e = main.MissileEnemy(10, launch_x=400, ground_y=540)
     for f in range(main.MISSILE_FLIGHT_FRAMES + 5):

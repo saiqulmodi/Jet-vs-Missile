@@ -207,6 +207,68 @@ def hints_due(level: int, seen) -> list:
     return [h for h in HINTS if level >= h[1] and h[0] not in seen]
 
 
+# PLAYER NAMES (user, 2026-10-03: "add a customise feature to add player name, player 1, player 2, before the game
+# starts, so that his score is also fixed there"). Names live in save.json "names"; each name's own record in
+# "players": {name: {"high_score", "best_level", "wins"}}. The first time "PLAYER 1" is renamed, the record
+# made under "PLAYER 1" (the record from before names existed, too) moves to the new name.
+MAX_NAME_LEN = 12
+DEFAULT_NAMES = ("PLAYER 1", "PLAYER 2")
+
+
+def clean_name(s: str, default: str) -> str:
+    s = "".join(ch for ch in str(s) if ch.isalnum() or ch in " -_.'").strip()[:MAX_NAME_LEN]
+    return s.upper() if s else default
+
+
+def load_player_names():
+    names = load_save_data().get("names", list(DEFAULT_NAMES))
+    if not isinstance(names, list) or len(names) != 2:
+        names = list(DEFAULT_NAMES)
+    return [clean_name(names[0], DEFAULT_NAMES[0]), clean_name(names[1], DEFAULT_NAMES[1])]
+
+
+def _write_save(data: dict):
+    try:
+        with open(SAVE_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+def player_record(name: str, data: dict = None) -> dict:
+    """A name's record; "PLAYER 1" with no record yet inherits the record from before names existed."""
+    data = data if data is not None else load_save_data()
+    rec = data.get("players", {}).get(name)
+    if rec is None and name == DEFAULT_NAMES[0]:
+        rec = {"high_score": data.get("high_score", 0), "best_level": data.get("max_level_reached", 1), "wins": 0}
+    return {"high_score": 0, "best_level": 1, "wins": 0, **(rec or {})}
+
+
+def save_player_names(names, old_p1: str = None):
+    names = [clean_name(names[0], DEFAULT_NAMES[0]), clean_name(names[1], DEFAULT_NAMES[1])]
+    data = load_save_data()
+    players = data.setdefault("players", {})
+    if old_p1 == DEFAULT_NAMES[0] and names[0] != old_p1 and names[0] not in players:
+        players[names[0]] = player_record(old_p1, data)      # "PLAYER 1"'s record becomes the new name's
+        players.pop(old_p1, None)
+    data["names"] = list(names)
+    _write_save(data)
+
+
+def record_result(name: str, score: int = None, level: int = None, win: bool = False):
+    """Keep a player's best score and level, and count duel wins, under their name."""
+    data = load_save_data()
+    rec = player_record(name, data)
+    if score is not None:
+        rec["high_score"] = max(rec["high_score"], int(score))
+    if level is not None:
+        rec["best_level"] = max(rec["best_level"], int(level))
+    if win:
+        rec["wins"] += 1
+    data.setdefault("players", {})[name] = rec
+    _write_save(data)
+
+
 def mark_hint_seen(hint_id: str):
     data = load_save_data()
     seen = set(data.get("hints_seen", []))
@@ -285,6 +347,29 @@ OVERDRIVE_MUTATORS = [
 # SPRITE GENERATION
 # ==============================================================================
 JET_GROUND_CLEARANCE = 12   # the jet's centre this close to the ground line = it hit the ground
+
+# AEROBATIC FLIGHT (user, 2026-10-03: "jet should have aerobatic movement"): when steered, the jet turns its nose
+# at a limited rate and keeps its speed, so it flies arcs, loops and rolls instead of stopping and reversing.
+# Asked to reverse, it pulls up through a half loop (Immelmann) -- or, near the top, dives through one (split-S).
+JET_TURN_PER_FRAME = 0.085   # about 290 degrees per second
+HALF_LOOP_TOP = 150          # above this height a reversal goes down through the half loop instead of up
+
+# SKY ESCAPE (user, 2026-10-03: "it goes up into sky to escape from attack, let it go, come back within 3 seconds"):
+# the jet may fly out of the top of the screen. Up there it is out of sight (missiles and drones head for the spot
+# where it vanished, their fuses can't find it). After SKY_RETURN frames above the top it turns back down by
+# itself, so it is always back in the fight within 3 s; SKY_CEILING stops it climbing too far.
+SKY_RETURN = 75
+SKY_CEILING = -170
+SKY_MAX_FRAMES = 180
+
+
+def aerobatic_heading(head: float, want: float, cy: float) -> float:
+    """Next heading of a steered jet flying at `head` that is asked to fly toward `want` (screen y points down)."""
+    diff = angle_diff(want, head)
+    if abs(diff) > 2.6:                                 # a reversal: fly a half loop, not a skid
+        nose_up = -1.0 if math.cos(head) >= 0 else 1.0  # turning this way lifts the nose
+        diff = abs(diff) * (nose_up if cy > HALF_LOOP_TOP else -nose_up)
+    return head + max(-JET_TURN_PER_FRAME, min(JET_TURN_PER_FRAME, diff))
 
 
 def jet_hits_ground(center_y: float, ground_y: float) -> bool:
@@ -947,6 +1032,7 @@ class SiloLauncher:
 # Drones are subsonic: half the jet's top speed. They home on the jet and blow up against it (HP damage,
 # the shield E blocks it). The jet's protective AUTO-GUN fires by itself at drones inside its range.
 # ==============================================================================
+LAUNCHER_REVIVE_FRAMES = 120   # a destroyed launcher (truck or drone launcher) is rebuilt 2 s later (user, 2026-10-03)
 DRONE_MAX_LEVEL = 20
 DRONE_MISSILE_LEVEL = 5      # drone launchers carry their missile only from level 5 (keeps level 1 calm)
 DRONE_LAUNCHER_MAX = 10
@@ -1065,6 +1151,23 @@ class DroneLauncher:
         # it drives back and forth along the ground inside its own stretch (user, 2026-10-03: "launcher can move")
         self.lo, self.hi = x - 30, x + 30
         self.vx = random.choice((-1, 1)) * random.uniform(0.4, 0.9)
+        self.revive = 0                # frames until a destroyed one is rebuilt (it keeps the drones it had left)
+
+    def destroy(self):
+        self.alive = False
+        self.revive = LAUNCHER_REVIVE_FRAMES
+
+    def tick_revive(self) -> bool:
+        """One frame of rebuilding; True on the frame it is back (full armour, same drones / missile left)."""
+        if self.alive or self.revive <= 0:
+            return False
+        self.revive -= 1
+        if self.revive == 0:
+            self.alive = True
+            self.hp = self.max_hp
+            self.laser_frames = 0
+            return True
+        return False
 
     def move(self):
         if not self.alive:
@@ -1076,7 +1179,7 @@ class DroneLauncher:
 
     @property
     def pending(self) -> bool:
-        return self.alive and (self.drones_left > 0 or self.shots > 0)
+        return (self.alive or self.revive > 0) and (self.drones_left > 0 or self.shots > 0)
 
     def update(self, hold: bool = False, hold_missile: bool = False):
         """One frame -> (launch a drone now?, launch the missile now?)."""
@@ -1201,6 +1304,10 @@ async def main():
     def move_launchers(is_boss_wave, enemies):
         for i, ln in enumerate(launchers):
             if not ln["alive"]:
+                if ln.get("revive", 0) > 0:           # being rebuilt: back with full armour after 2 s
+                    ln["revive"] -= 1
+                    if ln["revive"] == 0:
+                        ln["alive"], ln["hp"], ln["laser_frames"] = True, ln["max_hp"], 0
                 continue
             if is_boss_wave and i == boss_site():
                 ln["x"] = float(ln["home"])
@@ -1225,6 +1332,9 @@ async def main():
             if not ln["alive"]:
                 pygame.draw.rect(screen, (35, 30, 28), (lx - 28, GROUND_Y - 10, 56, 10), border_radius=3)   # wreck
                 pygame.draw.circle(screen, (60, 60, 65), (lx + random.randint(-6, 6), GROUND_Y - 18 - random.randint(0, 10)), random.randint(4, 8))
+                if ln.get("revive", 0) > 0:
+                    t = tag_font.render(f"REBUILD {ln['revive'] / 60:.1f}s", True, (200, 200, 210))
+                    screen.blit(t, t.get_rect(center=(lx, GROUND_Y - 34)))
                 continue
             if ln["hp"] < ln["max_hp"]:   # one block per hit left, shown once it has been hit
                 seg = 44 // ln["max_hp"]
@@ -1280,6 +1390,7 @@ async def main():
     p1_vx, p1_vy = 3.0, 0.0
     p1_turn_rate = 0.0                       # heading change last frame (drives the bank effect)
     autopilot = {"mode": "cruise", "t": 120, "head": 0.0, "loop_left": 0.0, "roll": 0.0, "roll_left": 0.0}
+    sky_esc = {"t": 0, "x": 0.0, "ret": False}   # "ret": turning back down -- keys / autopilot wait until it is back                 # frames the jet has spent above the top of the screen (sky escape)
     AUTOPILOT_TURN = 0.065                   # max heading change per frame (radians)
 
     def autopilot_velocity(cx, cy, speed, threats):
@@ -1297,7 +1408,13 @@ async def main():
             closing = (cx - tx) * tvx + (cy - ty) * tvy > 0
             if d < 240 and closing and (near is None or d < near[0]):
                 near = (d, tx, ty, tvx, tvy)
-        if near and ap["mode"] != "break" and not (ap["mode"] == "roll" and near[0] > 140):
+        ap["esc_cd"] = max(0, ap.get("esc_cd", 0) - 1)
+        # SKY ESCAPE (user, 2026-10-03): now and then, with a missile close and the jet high enough, it climbs
+        # straight up out of the sky instead; it is pulled back into the fight within 3 s (see SKY_RETURN)
+        if near and cy < 300 and ap["esc_cd"] == 0 and ap["mode"] not in ("break", "escape") \
+                and random.random() < 0.5:
+            ap["mode"], ap["t"], ap["esc_cd"] = "escape", 150, 600
+        elif near and ap["mode"] not in ("break", "escape") and not (ap["mode"] == "roll" and near[0] > 140):
             path = math.atan2(near[4], near[3])
             side = 1 if (near[3] * (cy - near[2]) - near[4] * (cx - near[1])) > 0 else -1
             ap["break_head"] = path + side * math.pi / 2
@@ -1331,6 +1448,11 @@ async def main():
         elif mode == "break":
             want = ap["break_head"]
             spd = speed * 1.1
+        elif mode == "escape":   # full power, nose straight up, out of the top of the sky
+            want = -math.pi / 2 + (0.15 if facing_right else -0.15)
+            spd = speed * 1.15
+            if cy < -60:
+                ap["mode"], ap["t"] = "dive", 60
         else:  # loop: keep pulling up until a full circle is flown
             step = 2 * math.pi / 100
             ap["head"] += -step if facing_right else step
@@ -1341,11 +1463,16 @@ async def main():
             spd = cruise * 1.25
 
         # stay in the sky: turn back from the side edges, pull up near the ground, push down near the top
-        if cx < 180:
+        # (an escape climb is allowed out of the top: SKY_RETURN brings the jet back)
+        if mode == "escape":
+            pass
+        elif cx < 180:
             want = 0.0
         elif cx > SCREEN_WIDTH - 180:
             want = math.pi
-        if cy > GROUND_Y - 150 and math.sin(want) > -0.3:
+        if mode == "escape":
+            pass
+        elif cy > GROUND_Y - 150 and math.sin(want) > -0.3:
             want = -0.6 if math.cos(want) >= 0 else math.pi + 0.6
             if mode == "loop":
                 ap["mode"], ap["t"] = "climb", 40
@@ -1514,6 +1641,7 @@ async def main():
         if ln["hp"] <= 0 and ln["alive"]:
             ln["alive"] = False
             ln["reloads"] = 0
+            ln["revive"] = LAUNCHER_REVIVE_FRAMES     # rebuilt 2 s later (user, 2026-10-03); its RELOADs stay lost
             SFX.snd_explode.play()
             total_score += 150
             for e in campaign_enemies[:]:
@@ -1555,13 +1683,14 @@ async def main():
         return pygame.Rect(dl.x - 18, GROUND_Y - 22, 36, 22)
 
     def damage_drone_launcher(dl, hits=1):
-        """A drone launcher is destroyed by its 2nd hit (its remaining drones and missile go with it)."""
+        """A drone launcher is destroyed by its 2nd hit; it is rebuilt LAUNCHER_REVIVE_FRAMES (2 s) later and goes on
+        with the drones / missile it had left (user, 2026-10-03)."""
         nonlocal total_score
         if not dl.alive:
             return
         dl.hp -= hits
         if dl.hp <= 0:
-            dl.alive = False
+            dl.destroy()
             blasts.append([dl.x, GROUND_Y - 12, 0, 1.0])
             SFX.snd_explode.play()
             total_score += 120
@@ -1589,7 +1718,7 @@ async def main():
             if d.x < -80 or d.x > SCREEN_WIDTH + 80 or d.y < -300:
                 drones.remove(d)
                 continue
-            if hp > 0 and p1_stealth_timer == 0 and not d.expired and \
+            if hp > 0 and p1_stealth_timer == 0 and sky_esc["t"] == 0 and not d.expired and \
                     math.hypot(d.x - jcx, d.y - jcy) < DRONE_HIT_RADIUS + 30 * jet_size_factor(jcy):
                 drones.remove(d)
                 blasts.append([d.x, d.y, 0, 0.7])
@@ -1631,6 +1760,9 @@ async def main():
             x = int(dl.x)
             if not dl.alive:
                 pygame.draw.rect(screen, (35, 30, 28), (x - 16, GROUND_Y - 6, 32, 6), border_radius=2)
+                if dl.revive > 0:
+                    t = tag_font.render(f"REBUILD {dl.revive / 60:.1f}s", True, (200, 200, 210))
+                    screen.blit(t, t.get_rect(center=(x, GROUND_Y - 22)))
                 continue
             pygame.draw.rect(screen, (78, 84, 70), (x - 18, GROUND_Y - 10, 36, 10), border_radius=2)     # base
             pygame.draw.polygon(screen, (100, 106, 90), [(x - 14, GROUND_Y - 10), (x + 12, GROUND_Y - 24),
@@ -1871,7 +2003,14 @@ async def main():
         p1_split_timer = 0
 
         update_save_data(total_score, current_level)
+        if origin_mode == "CAMPAIGN":            # this player's own record, under their name
+            record_result(names[0], score=total_score, level=current_level)
+        elif winner == "P1":
+            record_result(names[0], win=True)
+        elif modes["missile"] == "MANUAL":       # a human drove the launcher: the win is theirs
+            record_result(names[1], win=True)
         saved_data.update(load_save_data())      # keeps "continue from level N" up to date
+        refresh_records()
 
         wins = p1_wins if winner == "P1" else p2_wins
         is_5th_milestone = False
@@ -1899,6 +2038,7 @@ async def main():
         p1_x, p1_y = 120.0, 300.0
         p1_vx, p1_vy = 3.0, 0.0
         autopilot.update({"mode": "cruise", "t": 120, "head": 0.0, "roll": 0.0})
+        sky_esc["t"], sky_esc["ret"] = 0, False
         p2_x, p2_y = SCREEN_WIDTH - 150.0, 300.0
         p1_bullets.clear()
         active_decoys.clear()
@@ -1980,6 +2120,8 @@ async def main():
     TOUCH_MENU = pygame.Rect(SCREEN_WIDTH - 74, 32, 62, 24)
     CARD1 = pygame.Rect(55 + XC, 150, 335, 325)
     CARD2 = pygame.Rect(410 + XC, 150, 335, 325)
+    NAME_BTN1 = pygame.Rect(SCREEN_WIDTH // 2 - 340, 86, 335, 26)   # start screen: player 1 name
+    NAME_BTN2 = pygame.Rect(SCREEN_WIDTH // 2 + 5, 86, 335, 26)     # start screen: player 2 name
     MODE_JET_BTN = pygame.Rect(55 + XC, 482, 223, 22)       # start screen: JET MANUAL / AUTO
     MODE_MSL_BTN = pygame.Rect(288 + XC, 482, 224, 22)      # start screen: DUEL MISSILE MANUAL / AUTO
     MODE_DIFF_BTN = pygame.Rect(522 + XC, 482, 223, 22)     # start screen: AI EASY / NORMAL
@@ -1997,8 +2139,7 @@ async def main():
             floating_texts.append(["PHONE: ALWAYS YOU vs AI", SCREEN_WIDTH // 2 - 90, 230, (255, 230, 120), 50])
             return
         modes[which] = toggle_mode(modes[which])
-        save_control_modes(modes)
-        SFX.snd_hit.play()
+        save_control_modes(modes)                 # (no sound: sounds are only for actions -- user rule)
         if game_state in ("CAMPAIGN", "DUEL"):
             name = {"jet": "JET", "missile": "DUEL LAUNCHER", "difficulty": "AI"}[which]
             floating_texts.append([f"{name}: {modes[which]}", SCREEN_WIDTH // 2 - 50, 230, (255, 230, 120), 50])
@@ -2012,8 +2153,50 @@ async def main():
     pause = {"on": False, "drawn": False}
     hint = {"text": "", "frames": 0}
 
+    names = load_player_names()                     # [player 1, player 2]
+    name_edit = {"who": None, "buf": ""}            # which name box is being typed into (0 / 1 / None)
+    records = {}
+
+    def refresh_records():
+        records.clear()
+        data = load_save_data()
+        for nm in names:
+            records[nm] = player_record(nm, data)
+
+    refresh_records()
+
     def best_level():
-        return max(1, int(saved_data.get("max_level_reached", 1)))
+        """Continue from PLAYER 1's own best level."""
+        return max(1, int(records.get(names[0], {}).get("best_level", 1)))
+
+    def p2_display_name():
+        return "AI" if modes["missile"] == "AUTO" else names[1]
+
+    def finish_name_edit(text=None):
+        who = name_edit["who"]
+        if who is None:
+            return
+        old = names[who]
+        typed = name_edit["buf"] if text is None else text
+        names[who] = clean_name(typed, old)          # nothing typed: keep the old name
+        if names[0] == names[1]:                    # two players can't share a name
+            names[who] = (names[who][:MAX_NAME_LEN - 2] + " " + str(who + 1)).strip()
+        save_player_names(names, old_p1=old if who == 0 else None)
+        name_edit["who"], name_edit["buf"] = None, ""
+        refresh_records()
+
+    def start_name_edit(who):
+        if sys.platform == "emscripten":            # phones / browser: the page's own text box (brings up the keyboard)
+            try:
+                import platform
+                answer = platform.window.prompt(f"Player {who + 1} name:", names[who])
+                if answer is not None:
+                    name_edit["who"] = who
+                    finish_name_edit(str(answer))
+                return
+            except Exception:
+                pass
+        name_edit["who"], name_edit["buf"] = who, ""   # starts empty: type the new name
 
     def input_kind():
         """How the player is playing right now, for hint wording."""
@@ -2051,8 +2234,15 @@ async def main():
 
     def finger_down(tx, ty, fid):
         touch["on"] = True
+        if name_edit["who"] is not None:      # a tap while typing a name = done
+            finish_name_edit()
+            return
         if game_state == "MODE_SELECT":
-            if MODE_JET_BTN.inflate(0, 16).collidepoint(tx, ty):
+            if NAME_BTN1.inflate(0, 12).collidepoint(tx, ty):
+                start_name_edit(0)
+            elif NAME_BTN2.inflate(0, 12).collidepoint(tx, ty):
+                start_name_edit(1)
+            elif MODE_JET_BTN.inflate(0, 16).collidepoint(tx, ty):
                 post_key(pygame.K_j)
             elif MODE_MSL_BTN.inflate(0, 16).collidepoint(tx, ty):
                 post_key(pygame.K_k)
@@ -2215,6 +2405,35 @@ async def main():
             if event.type == pygame.FINGERUP:
                 finger_up(event.finger_id)
                 continue
+
+            # NAME TYPING (start screen): letters go into the name box, Enter / Tab = done, Esc = cancel, a click = done.
+            # Nothing else reacts to the keys meanwhile (typing "J" must not switch the jet mode).
+            if name_edit["who"] is not None:
+                if event.type == pygame.TEXTINPUT:
+                    name_edit["buf"] = (name_edit["buf"] + event.text)[:MAX_NAME_LEN]
+                elif event.type == pygame.KEYDOWN:
+                    if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_TAB):
+                        finish_name_edit()
+                        pygame.key.stop_text_input()
+                    elif event.key == pygame.K_ESCAPE:
+                        name_edit["who"], name_edit["buf"] = None, ""
+                        pygame.key.stop_text_input()
+                    elif event.key == pygame.K_BACKSPACE:
+                        name_edit["buf"] = name_edit["buf"][:-1]
+                elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.FINGERDOWN):
+                    finish_name_edit()
+                    pygame.key.stop_text_input()
+                if event.type != pygame.QUIT:
+                    continue
+            if game_state == "MODE_SELECT" and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 \
+                    and not getattr(event, "touch", False):
+                for who, rect in enumerate((NAME_BTN1, NAME_BTN2)):
+                    if rect.collidepoint(event.pos):
+                        start_name_edit(who)
+                        if name_edit["who"] is not None:
+                            pygame.key.start_text_input()
+                if name_edit["who"] is not None:
+                    continue
 
             # PAUSE (Enter / Pause key, touch PAUSE, controller: hold button 7 + d-pad down): everything freezes.
             # While paused only resume (the same keys, a tap, any controller button), Esc (menu) and closing work.
@@ -2499,12 +2718,25 @@ async def main():
         # ======================================================================
         if game_state == "MODE_SELECT":
             t_surf = title_font.render("JET vs MISSILE", True, (255, 140, 0))
-            sub_surf = font.render("CHOOSE GAMEPLAY MODE", True, (0, 220, 255))
             screen.blit(t_surf, (SCREEN_WIDTH // 2 - t_surf.get_width() // 2, 45))
-            screen.blit(sub_surf, (SCREEN_WIDTH // 2 - sub_surf.get_width() // 2, 90))
 
-            lb_txt = f"BEST RECORD: LEVEL {saved_data.get('max_level_reached', 1)} | HIGH SCORE: {saved_data.get('high_score', 0)}"
-            screen.blit(font.render(lb_txt, True, (255, 215, 60)), (SCREEN_WIDTH // 2 - 200, 120))
+            # PLAYER NAMES: click / tap a box to type a name (Enter = done); each name keeps its own record
+            for who, rect in enumerate((NAME_BTN1, NAME_BTN2)):
+                editing = name_edit["who"] == who
+                hov = rect.collidepoint(mouse_pos) and not touch["on"]
+                pygame.draw.rect(screen, (40, 52, 80) if (hov or editing) else (24, 30, 48), rect, border_radius=6)
+                pygame.draw.rect(screen, (255, 230, 120) if editing else (0, 220, 255), rect, 2 if editing else 1, border_radius=6)
+                shown = name_edit["buf"] + ("_" if (pygame.time.get_ticks() // 400) % 2 else " ") if editing else names[who]
+                hint_txt = "  (ENTER = done)" if editing else ("" if touch["on"] else "  [click to edit]")
+                t = font.render(f"PLAYER {who + 1}: {shown}{hint_txt}", True, (255, 230, 120) if editing else (0, 220, 255))
+                screen.blit(t, t.get_rect(center=rect.center))
+
+            r1 = records.get(names[0], {"best_level": 1, "high_score": 0, "wins": 0})
+            r2 = records.get(names[1], {"wins": 0})
+            lb_txt = (f"{names[0]}: BEST LEVEL {r1['best_level']} | HIGH SCORE {r1['high_score']} | DUEL WINS {r1['wins']}"
+                      f"     {names[1]}: DUEL WINS {r2['wins']}")
+            t = font.render(lb_txt, True, (255, 215, 60))
+            screen.blit(t, t.get_rect(center=(SCREEN_WIDTH // 2, 128)))
 
             card1 = CARD1
             pygame.draw.rect(screen, (18, 22, 38), card1, border_radius=12)
@@ -2542,7 +2774,7 @@ async def main():
             duel_vs_ai = modes["missile"] == "AUTO"     # always on phones
             screen.blit(big_font.render("JET vs AI LAUNCHER" if duel_vs_ai else "JET vs LAUNCHER", True, (0, 220, 255)), (435 + XC, 168))
             lines2 = [
-                "You fly the jet vs an AI launcher" if duel_vs_ai else "P1 flies the jet, P2 drives the launcher",
+                "You fly the jet vs an AI launcher" if duel_vs_ai else "P1 flies the jet, P2 drives",
                 "[YOU GET +15% IN EVERYTHING]:" if duel_vs_ai else "[EQUAL BALANCED COMBAT]:",
                 "- Jet " + ("138" if duel_vs_ai else "120") + " HP; launcher: 12 hits",
                 "- Missiles & drones come only from it",
@@ -2658,9 +2890,15 @@ async def main():
         if game_state == "NORMAL_ROUND_BREAK":
             break_timer -= 1
 
-            r_msg = "ROUND WON BY THE JET!" if break_winner == "P1" else "ROUND WON BY THE MISSILES!"
+            if break_winner == "P1":
+                r_msg = f"ROUND WON BY {names[0]} (JET)!"
+            elif prev_mode == "DUEL":
+                r_msg = f"ROUND WON BY {p2_display_name()} (LAUNCHER)!"
+            else:
+                r_msg = "ROUND WON BY THE MISSILES!"
             r_col = (255, 180, 80) if break_winner == "P1" else (0, 220, 255)
-            screen.blit(title_font.render(r_msg, True, r_col), (SCREEN_WIDTH // 2 - 270, 240))
+            t = title_font.render(r_msg, True, r_col)
+            screen.blit(t, t.get_rect(center=(SCREEN_WIDTH // 2, 256)))
             screen.blit(font.render("RESTORING POSITIONS...", True, (200, 210, 230)), (SCREEN_WIDTH // 2 - 90, 290))
 
             if break_timer <= 0:
@@ -2755,12 +2993,16 @@ async def main():
             if touch["stick_id"] is not None and math.hypot(*touch["vec"]) > 0.2:
                 in_x, in_y = touch["vec"]          # thumb stick: fly where the thumb points
             old_head = math.atan2(p1_vy, p1_vx)
-            if in_x or in_y:
-                # manual: fly where the keys point, with a little momentum
-                n = math.hypot(in_x, in_y)
-                p1_vx += (in_x / n * actual_p1_speed - p1_vx) * 0.25
-                p1_vy += (in_y / n * actual_p1_speed - p1_vy) * 0.25
-                autopilot["head"] = math.atan2(p1_vy, p1_vx)
+            if sky_esc["ret"]:
+                pass   # coming back down from a sky escape: the return manoeuvre below has the controls
+            elif in_x or in_y:
+                # steered: the nose turns toward where the keys / stick point at a limited rate and the jet keeps
+                # its speed (never stalls), so it flies arcs and half loops -- aerobatic, not a skidding stop
+                spd = math.hypot(p1_vx, p1_vy)
+                spd = max(actual_p1_speed * 0.55, spd + (actual_p1_speed - spd) * 0.08)
+                head = aerobatic_heading(old_head, math.atan2(in_y, in_x), p1_y + 40)
+                p1_vx, p1_vy = math.cos(head) * spd, math.sin(head) * spd
+                autopilot["head"] = head
                 autopilot["mode"], autopilot["t"], autopilot["roll"] = "cruise", 60, 0.0
             elif modes["jet"] == "MANUAL":
                 pass   # JET MANUAL: no autopilot; hands off, the jet holds its course and speed
@@ -2776,6 +3018,26 @@ async def main():
                 want_vx, want_vy = autopilot_velocity(p1_x + 50, p1_y + 40, actual_p1_speed, threats)
                 p1_vx += (want_vx - p1_vx) * 0.35
                 p1_vy += (want_vy - p1_vy) * 0.35
+            # SKY ESCAPE: above the top of the screen the jet is out of sight; after SKY_RETURN frames up there it
+            # turns back down by itself (whatever the keys or the autopilot say), so it is back within 3 s
+            if p1_y + 40 < 0:
+                if sky_esc["t"] == 0:
+                    sky_esc["x"] = p1_x + 50                 # where the missiles last saw it
+                sky_esc["t"] += 1
+            elif p1_y + 40 > 20:
+                sky_esc["t"] = 0
+            if sky_esc["t"] >= SKY_RETURN:
+                sky_esc["ret"] = True
+            elif p1_y + 40 > 60:
+                sky_esc["ret"] = False
+            if sky_esc["ret"]:
+                spd = max(math.hypot(p1_vx, p1_vy), actual_p1_speed * 0.8)
+                down = math.pi / 2 + (-0.35 if p1_vx >= 0 else 0.35)
+                head = aerobatic_heading(math.atan2(p1_vy, p1_vx), down, -1000.0)   # dive back in, nose first
+                p1_vx, p1_vy = math.cos(head) * spd, math.sin(head) * spd
+                autopilot["head"] = head
+                if autopilot["mode"] == "escape":
+                    autopilot["mode"], autopilot["t"] = "dive", 40
             p1_x += p1_vx
             p1_y += p1_vy
             new_head = math.atan2(p1_vy, p1_vx)
@@ -2785,9 +3047,9 @@ async def main():
             if p1_x < 10 or p1_x > SCREEN_WIDTH - 110:
                 p1_x = max(10, min(SCREEN_WIDTH - 110, p1_x))
                 p1_vx = -p1_vx * 0.5
-            if p1_y < 55:
-                p1_y = 55
-                p1_vy = -p1_vy * 0.5
+            if p1_y + 40 < SKY_CEILING:           # the top of the escape climb
+                p1_y = SKY_CEILING - 40
+                p1_vy = max(0.0, p1_vy)
             # flying into the ground crashes the jet (user, 2026-10-03); the shield doesn't help
             if jet_hits_ground(p1_y + 40, GROUND_Y):
                 p1_y = GROUND_Y - JET_GROUND_CLEARANCE - 40
@@ -2946,6 +3208,8 @@ async def main():
 
             if p1_camo_timer > 0:
                 p1_target_x, p1_target_y = p1_camo_x, p1_camo_y
+            if sky_esc["t"] > 0:   # escaped up out of the sky: missiles and drones head for where it vanished
+                p1_target_x, p1_target_y = sky_esc["x"], -30.0
             if p1_stealth_timer > 0:
                 p1_target_x, p1_target_y = p1_stealth_x, p1_stealth_y
                 for e in campaign_enemies:
@@ -3008,7 +3272,7 @@ async def main():
             # by the jet score points.
             jet_cx, jet_cy = p1_x + 50, p1_y + 40
             for e in campaign_enemies[:]:
-                if e.is_burrowed or e.launch_delay > 0 or p1_hp <= 0 or p1_stealth_timer > 0 or getattr(e, "decoyed", False) or e.expired:
+                if e.is_burrowed or e.launch_delay > 0 or p1_hp <= 0 or p1_stealth_timer > 0 or sky_esc["t"] > 0 or getattr(e, "decoyed", False) or e.expired:
                     continue
                 ex, ey = e.x + e.width / 2, e.y + e.height / 2
                 if math.hypot(ex - jet_cx, ey - jet_cy) > jet_fuse_radius(jet_cy) * (1.4 if e.is_boss else 1.0) * e.fuse_factor:
@@ -3128,6 +3392,7 @@ async def main():
             for dl in drone_launchers:
                 if any(ln["alive"] and abs(ln["x"] - dl.x) < 52 and (ln["x"] - dl.x) * dl.vx > 0 for ln in launchers):
                     dl.vx = -dl.vx                   # turns back before it would drive into a truck
+                dl.tick_revive()                     # a destroyed one is rebuilt after 2 s
                 dl.move()
                 want_drone, want_missile = dl.update(hold=p1_stealth_timer > 0,
                                                      hold_missile=len(campaign_enemies) >= MAX_WAVE_MISSILES)
@@ -3166,7 +3431,9 @@ async def main():
             if p2_flash_timer > 0:
                 p2_flash_timer -= 1
             duel_target_x, duel_target_y = center_p1_x, center_p1_y   # where its missiles and drones head
-            if p1_stealth_timer > 0:
+            if sky_esc["t"] > 0:                         # escaped up into the sky: they head for where it vanished
+                duel_target_x, duel_target_y = sky_esc["x"], -30.0
+            elif p1_stealth_timer > 0:
                 duel_target_x, duel_target_y = p1_stealth_x, p1_stealth_y
             elif p1_camo_timer > 0:
                 duel_target_x, duel_target_y = p1_camo_x, p1_camo_y
@@ -3254,7 +3521,7 @@ async def main():
                     blasts.append([mx, my, 0, 0.8])
                     SFX.snd_explode.play()
                     continue
-                if p1_hp > 0 and p1_stealth_timer == 0 and not e.decoyed and not e.expired and \
+                if p1_hp > 0 and p1_stealth_timer == 0 and sky_esc["t"] == 0 and not e.decoyed and not e.expired and \
                         math.hypot(mx - center_p1_x, my - center_p1_y) <= jet_fuse_radius(center_p1_y) * e.fuse_factor:
                     duel["missiles"].remove(e)
                     blasts.append([mx, my, 0, 1.0])
@@ -3420,6 +3687,15 @@ async def main():
             if p1_guard:
                 pygame.draw.circle(screen, (0, 220, 255), (int(center_p1_x), int(center_p1_y)), int(jet_fuse_radius(center_p1_y)), 3)
 
+            if sky_esc["t"] > 0:   # escaped above the screen: a marker on the top edge shows where it is and the countdown
+                mx = int(max(20, min(SCREEN_WIDTH - 20, center_p1_x)))
+                pygame.draw.polygon(screen, (255, 230, 120), [(mx, 2), (mx - 9, 16), (mx + 9, 16)])
+                left = max(1, math.ceil((SKY_MAX_FRAMES - sky_esc["t"]) / 60))
+                t = font.render(f"JET IN THE SKY - BACK IN {left}s", True, (255, 230, 120))
+                box = t.get_rect(midtop=(max(140, min(SCREEN_WIDTH - 140, mx)), 18)).inflate(10, 4)
+                pygame.draw.rect(screen, (10, 14, 24), box, border_radius=4)       # readable over the HUD
+                screen.blit(t, t.get_rect(center=box.center))
+
             p1_aim = p1_aim_angle if 'p1_aim_angle' in locals() else 0.0
             pygame.draw.line(screen, WEAPON_TIERS[p1_power_tier]["color_outer"], (center_p1_x, center_p1_y),
                              (center_p1_x + math.cos(p1_aim) * 70 * jet_f, center_p1_y + math.sin(p1_aim) * 70 * jet_f), 3)
@@ -3474,8 +3750,8 @@ async def main():
         # DIGITAL NUMERIC HUD
         # ======================================================================
         p1_col = (255, 140, 0) if p1_hp > 50 else (255, 60, 60)
-        p1_title = (f"P1: JET [{modes['jet']}] (3X, +15% vs AI)" if game_state == "CAMPAIGN"
-                    else f"P1: JET [{modes['jet']}]" + (" (+15% vs AI)" if pbuff() > 1 else ""))
+        p1_title = (f"{names[0]}: JET [{modes['jet']}] (3X, +15% vs AI)" if game_state == "CAMPAIGN"
+                    else f"{names[0]}: JET [{modes['jet']}]" + (" (+15% vs AI)" if pbuff() > 1 else ""))
         screen.blit(font.render(p1_title, True, (255, 180, 80)), (20, 12))
         screen.blit(num_font.render(f"HP: {int(p1_hp)} / {p1_max_hp}", True, p1_col), (20, 30))
         wpn_desc = f"PWR TIER {p1_power_tier}: {WEAPON_TIERS[p1_power_tier]['name']} (Press 'L')"
@@ -3542,7 +3818,7 @@ async def main():
 
         elif game_state == "DUEL":
             p2_col = (0, 210, 255) if p2_hp > 1 else (255, 60, 60)
-            p2_head = font.render("P2: AI LAUNCHER" if modes["missile"] == "AUTO" else "P2: LAUNCHER [MANUAL]", True, (0, 210, 255))
+            p2_head = font.render("AI LAUNCHER" if modes["missile"] == "AUTO" else f"{names[1]}: LAUNCHER", True, (0, 210, 255))
             p2_num = num_font.render(f"HITS LEFT: {int(p2_hp)} / {p2_max_hp}", True, p2_col)
             p2_sub = font.render(("FIRES MISSILES & DRONES" if modes["missile"] == "AUTO" else
                                   "ARROWS DRIVE | UP MISSILE | DOWN DRONE") + f" | WINS: {p2_wins}", True, (200, 210, 230))
