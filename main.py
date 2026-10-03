@@ -147,6 +147,10 @@ def update_save_data(score: int, level: int):
 # JET MANUAL: no autopilot, no auto-fire (hands off = it holds its course). MISSILE AUTO: the computer flies P2's
 # missile in the duel; MISSILE MANUAL: player 2 flies it. Campaign missiles are always computer-guided.
 CONTROL_MODES = ("AUTO", "MANUAL")
+# DUEL SIDE (user, 2026-10-03: "I wanted launcher as man and fighter as AI"): JET = you fly the jet (as before);
+# LAUNCHER = you drive the launcher and the computer flies the jet (autopilot attack runs, auto-fire, flares,
+# shield, repair kits and SAFEGUARD). Start-screen button / key 4; saved in save.json.
+DUEL_SIDES = ("JET", "LAUNCHER")
 
 
 DIFFICULTIES = ("NORMAL", "EASY")
@@ -170,14 +174,16 @@ def load_control_modes() -> dict:
     jet = data.get("jet_mode", "AUTO")
     missile = data.get("missile_mode", "MANUAL")
     diff = data.get("difficulty", "NORMAL")
+    side = data.get("duel_side", "JET")
     return {"jet": jet if jet in CONTROL_MODES else "AUTO", "missile": missile if missile in CONTROL_MODES else "MANUAL",
-            "difficulty": diff if diff in DIFFICULTIES else "NORMAL"}
+            "difficulty": diff if diff in DIFFICULTIES else "NORMAL", "side": side if side in DUEL_SIDES else "JET"}
 
 
 def save_control_modes(modes: dict):
     data = load_save_data()
     data["jet_mode"], data["missile_mode"] = modes["jet"], modes["missile"]
     data["difficulty"] = modes.get("difficulty", "NORMAL")
+    data["duel_side"] = modes.get("side", "JET")
     try:
         with open(SAVE_FILE, "w") as f:
             json.dump(data, f, indent=2)
@@ -186,7 +192,7 @@ def save_control_modes(modes: dict):
 
 
 def toggle_mode(m: str) -> str:
-    return {"AUTO": "MANUAL", "MANUAL": "AUTO", "EASY": "NORMAL", "NORMAL": "EASY"}[m]
+    return {"AUTO": "MANUAL", "MANUAL": "AUTO", "EASY": "NORMAL", "NORMAL": "EASY", "JET": "LAUNCHER", "LAUNCHER": "JET"}[m]
 
 
 # FIRST-TIME HINTS (user, 2026-10-03): shown once ever (remembered in save.json) when a feature unlocks.
@@ -376,17 +382,69 @@ def jet_hits_ground(center_y: float, ground_y: float) -> bool:
     return center_y >= ground_y - JET_GROUND_CLEARANCE
 
 
+# ==============================================================================
+# BIOMES (user, 2026-10-03): the ground changes every 10 levels through 10 landscapes, then the cycle repeats.
+# Each has its own sky gradient, a slowly scrolling far layer (parallax) and a foreground ground strip.
+# Levels 1-10 keep the original green look. Craters and smoke stay on the ground until the biome changes.
+# ==============================================================================
+BIOMES = [
+    {"name": "GRASSLAND", "sky": ((8, 12, 30), (30, 52, 100)), "cloud": (40, 55, 85), "far": (22, 38, 30), "far_kind": "hills",
+     "ground": (30, 48, 34), "detail": (45, 66, 46), "edge": (70, 100, 70)},
+    {"name": "DEEP OCEAN", "sky": ((6, 16, 40), (40, 90, 140)), "cloud": (60, 80, 110), "far": (14, 50, 90), "far_kind": "sea",
+     "ground": (70, 74, 80), "detail": (95, 100, 108), "edge": (170, 210, 235)},      # launchers drive on a sea causeway
+    {"name": "SEA SHORE", "sky": ((20, 30, 60), (110, 150, 190)), "cloud": (150, 165, 190), "far": (20, 90, 130), "far_kind": "sea",
+     "ground": (190, 170, 120), "detail": (165, 145, 100), "edge": (230, 220, 180)},
+    {"name": "DESERT DUNES", "sky": ((40, 30, 40), (200, 140, 80)), "cloud": (190, 150, 110), "far": (170, 120, 70), "far_kind": "dunes",
+     "ground": (200, 160, 95), "detail": (175, 135, 75), "edge": (225, 190, 120)},
+    {"name": "MUD FLATS", "sky": ((20, 22, 25), (80, 80, 75)), "cloud": (70, 70, 70), "far": (60, 50, 38), "far_kind": "mounds",
+     "ground": (72, 55, 38), "detail": (52, 38, 26), "edge": (95, 75, 50)},
+    {"name": "RED CANYON", "sky": ((30, 20, 30), (170, 90, 60)), "cloud": (150, 90, 70), "far": (130, 60, 40), "far_kind": "mesa",
+     "ground": (140, 70, 45), "detail": (115, 55, 35), "edge": (175, 95, 60)},
+    {"name": "ARCTIC TUNDRA", "sky": ((20, 30, 55), (170, 200, 230)), "cloud": (220, 230, 245), "far": (200, 215, 235), "far_kind": "peaks",
+     "ground": (225, 235, 245), "detail": (180, 200, 220), "edge": (150, 180, 210)},
+    {"name": "VOLCANIC ASH", "sky": ((15, 8, 10), (90, 30, 20)), "cloud": (60, 40, 40), "far": (40, 30, 30), "far_kind": "volcano",
+     "ground": (35, 30, 32), "detail": (230, 80, 20), "edge": (255, 120, 40)},
+    {"name": "JUNGLE", "sky": ((5, 15, 15), (30, 70, 55)), "cloud": (40, 70, 60), "far": (10, 45, 25), "far_kind": "canopy",
+     "ground": (20, 50, 25), "detail": (35, 80, 35), "edge": (60, 120, 50)},
+    {"name": "URBAN GRID", "sky": ((12, 12, 22), (70, 75, 95)), "cloud": (80, 85, 100), "far": (35, 38, 50), "far_kind": "skyline",
+     "ground": (75, 78, 85), "detail": (110, 112, 120), "edge": (170, 170, 60)},
+]
+
+
+def biome_index(level: int) -> int:
+    """Levels 1-10 = biome 0, 11-20 = biome 1, ... 91-100 = biome 9, then the cycle starts again."""
+    return ((max(1, level) - 1) // 10) % len(BIOMES)
+
+
+# JET PAINT (user, 2026-10-03): every level paints the jet in its own colour -- 100 hues around the colour
+# wheel for levels 1-100, then the next hundred levels repeat the hues in a deeper shade (100+ looks).
+def jet_paint(level: int):
+    """(body, dark, edge, camo) colours of the jet at this level."""
+    i, band = (max(1, level) - 1) % 100, (max(1, level) - 1) // 100
+    hue = (210 + i * 3.6) % 360
+    sat = max(30, 62 - (band % 3) * 14)
+
+    def hsv(h, s, v):
+        c = pygame.Color(0)
+        c.hsva = (h % 360, max(0, min(100, s)), max(0, min(100, v)), 100)
+        return (c.r, c.g, c.b)
+    return (hsv(hue, sat, 68), hsv(hue, sat + 12, 42), hsv(hue, sat - 25, 88), hsv(hue + 30, sat + 10, 55))
+
+
 @functools.lru_cache(maxsize=64)   # drawn every frame: build each look once, then reuse it (callers only scale/rotate copies)
-def create_jet_sprite(tail_flag: bool = False, aura_color=None, alpha: int = 255) -> pygame.Surface:
+def create_jet_sprite(tail_flag: bool = False, aura_color=None, alpha: int = 255, paint=None) -> pygame.Surface:
     """The player's stealth fighter (F-35-M style, own design, no real markings).
     Top-down view, nose pointing right. tail_flag = shield/glow outline; aura_color
-    tints the afterburner and outline (the current weapon tier's colour)."""
+    tints the afterburner and outline (the current weapon tier's colour); paint = jet_paint(level)
+    colours with camouflage blotches (None = the plain grey jet)."""
     surf = pygame.Surface((72, 60), pygame.SRCALPHA)
 
     glow = aura_color if aura_color else (255, 140, 0)
     body = (95, 103, 118)
     dark = (55, 60, 72)
     edge = (140, 150, 165)
+    if paint:
+        body, dark, edge, camo = paint
 
     fuselage = [(71, 30), (58, 25), (44, 22), (22, 22), (14, 25), (14, 35), (22, 38), (44, 38), (58, 35)]
     wing_top = [(46, 23), (27, 4), (19, 6), (24, 23)]
@@ -403,6 +461,17 @@ def create_jet_sprite(tail_flag: bool = False, aura_color=None, alpha: int = 255
         pygame.draw.polygon(surf, (*edge, alpha), poly, width=1)
     pygame.draw.polygon(surf, (*body, alpha), fuselage)
     pygame.draw.polygon(surf, (*edge, alpha), fuselage, width=1)
+
+    if paint:   # camouflage blotches, only inside the airframe (same pattern for a given paint)
+        shape = pygame.Surface((72, 60), pygame.SRCALPHA)
+        for poly in (wing_top, wing_bot, tail_top, tail_bot, fuselage):
+            pygame.draw.polygon(shape, (255, 255, 255, 255), poly)
+        blot = pygame.Surface((72, 60), pygame.SRCALPHA)
+        rng = random.Random(hash(paint))
+        for _ in range(9):
+            pygame.draw.circle(blot, (*camo, alpha), (rng.randint(12, 60), rng.randint(6, 54)), rng.randint(3, 6))
+        blot.blit(shape, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+        surf.blit(blot, (0, 0))
 
     # twin canted vertical fins (seen from above as thin slivers)
     pygame.draw.polygon(surf, (*edge, alpha), [(27, 25), (17, 19), (16, 21), (25, 27)])
@@ -776,6 +845,39 @@ WEAPON_TIERS = {
     5: {"type": "laser",  "beam_w": 18, "color_outer": (255, 50, 120), "color_core": (255, 255, 255), "dmg": 9,  "name": "HYPER NOVA DEATH-RAY"},
 }
 
+# LASER RAY (user, 2026-10-03): its own key Z (touch LASER, controller hold 7 + Square), separate from the guns.
+# One battery feeds every laser: at most 5 s of beam, then 10 s of cooldown before it fires again. Let go early
+# and it slowly recharges (1 s of beam per 2 s off). The laser weapon tiers (L) use the same battery; while it
+# cools down the fire button shoots the gun instead.
+LASER_MAX_FRAMES = 5 * 60
+LASER_COOLDOWN_FRAMES = 10 * 60
+LASER_RECHARGE_PER_FRAME = 0.5
+
+
+class LaserBattery:
+    def __init__(self):
+        self.charge = float(LASER_MAX_FRAMES)   # frames of beam left
+        self.cooldown = 0                       # frames until it can fire again after running dry
+        self.active = False
+
+    def update(self, firing: bool) -> bool:
+        """One frame. Returns True while the beam is on."""
+        if self.cooldown > 0:
+            self.cooldown -= 1
+            self.active = False
+            if self.cooldown == 0:
+                self.charge = float(LASER_MAX_FRAMES)
+            return False
+        if firing and self.charge > 0:
+            self.active = True
+            self.charge = max(0.0, self.charge - 1)
+            if self.charge == 0:
+                self.cooldown = LASER_COOLDOWN_FRAMES
+        else:
+            self.active = False
+            self.charge = min(float(LASER_MAX_FRAMES), self.charge + LASER_RECHARGE_PER_FRAME)
+        return self.active
+
 
 # ==============================================================================
 # NATION ARSENAL (user spec, 2026-10-03): every 5 levels one more nation unlocks. Its 2 ground
@@ -831,6 +933,24 @@ ARSENAL = {"nations": [
 IR_UNLOCK_LEVEL = 10
 GENERIC_IR_MISSILE = {"id": "ir_seeker", "name": "IR HEAT-SEEKER-M", "role": "IR", "trail": [255, 90, 160], "nation": ""}
 
+# SPECIAL ORDNANCE (user, 2026-10-03): the jet's own weapons that unlock with the level, on top of the nations'.
+# They sit in the same G / R cycle (touch WPN / MSL, controller button 7); Y and U fire the cluster bomb and
+# the bunker buster directly. Names end in "-M" like every weapon in the game.
+SPECIAL_ORDNANCE = [
+    {"id": "aim9", "name": "AIM-9 SIDEWINDER-M", "role": "IR", "unlock_level": 10, "hunts_drones": True, "trail": [255, 235, 120]},
+    {"id": "agm65", "name": "AGM-65 MAVERICK-M", "role": "AG", "unlock_level": 15, "trail": [120, 220, 255]},
+    {"id": "agm88", "name": "AGM-88 HARM-M", "role": "AG", "unlock_level": 15, "vmax": 13.0, "turn_deg_s": 160, "trail": [255, 120, 220]},
+    {"id": "cluster_chute", "name": "CLUSTER CHUTE-M", "role": "CLUSTER", "unlock_level": 25, "trail": [255, 170, 60]},
+    {"id": "bunker_buster", "name": "BUNKER BUSTER-M", "role": "BUSTER", "unlock_level": 50, "trail": [210, 210, 220]},
+    {"id": "hgv", "name": "HYPERSONIC GLIDE-M", "role": "AG", "unlock_level": 75, "thrust": 1.4, "vmax": 20.0,
+     "turn_deg_s": 110, "burn": 60, "blast": 50, "hits": 2, "trail": [255, 80, 40]},
+    {"id": "swarm_pod", "name": "SWARM POD-M", "role": "SWARM", "unlock_level": 75, "trail": [160, 255, 120]},
+]
+CLUSTER_CHUTE_FALL = 2.2       # px/frame: a bomblet floating down under its parachute
+CHUTE_COLORS = [(255, 70, 70), (255, 200, 40), (60, 200, 255), (120, 255, 120), (255, 120, 220), (255, 255, 255)]
+BUSTER_COOLDOWN = 10 * 60      # bunker buster: strictly one per 10 s (no vs-AI shortening)
+BUSTER_FUSE_DELAY = 24         # 0.4 s underground before it goes off
+
 
 def munition_label(m: dict) -> str:
     """'RUS R-77-M', or just the name for the generic IR seeker (no nation)."""
@@ -854,6 +974,14 @@ MUNITION_ROLES = {
               "ammo": 2, "blast": 40, "life": 900},
     "BOMB":  {"kind": "bomb", "guidance": "none", "target": "ground", "gravity": 0.16, "hits": 2, "ammo": 3,
               "blast": 55, "life": 600},
+    # parachute cluster bomb: falls, bursts ~200 px above the ground into 8 bomblets that float down on chutes
+    "CLUSTER": {"kind": "bomb", "guidance": "none", "target": "ground", "gravity": 0.16, "hits": 1, "ammo": 2,
+                "blast": 28, "life": 600, "bomblets": 8, "burst_h": 200},
+    # bunker buster: heavy and fast, steers a little, digs in, goes off 0.4 s later; also wrecks hidden silos nearby
+    "BUSTER":  {"kind": "bomb", "guidance": "bomb", "target": "ground", "gravity": 0.45, "steer_deg_s": 40, "hits": 2,
+                "ammo": 2, "blast": 95, "life": 400},
+    # swarm pod: opens at once into 6 small air-to-ground rockets, each flying at a different ground target
+    "SWARM":   {"kind": "pod", "guidance": "radar", "target": "ground", "hits": 1, "ammo": 1, "rockets": 6, "life": 1},
 }
 BOMB_DRAG = 0.004          # bombs lose 0.4% of their speed per frame to the air
 ORDNANCE_FUSE = 20         # an air-to-air missile this close to a flying missile destroys it
@@ -861,6 +989,26 @@ ORDNANCE_COOLDOWN = 36     # frames between ordnance launches (shortened by the 
 
 # Human vs AI (single player only): +15% damage and reload rate. The 2P duel stays symmetric (0%).
 HUMAN_VS_AI_BUFF = 1.15
+
+
+COMMAND_MISSILE_RELOAD = 100   # frames between your own missiles when you command the campaign launchers
+COMMAND_DRONE_RELOAD = 200
+COMMAND_SKY_CAP = 12           # you play the launchers: at most this many of your missiles (and drones) in the air
+LAUNCHER_WAVE_FRAMES = 60 * 60 # you play the launchers: the AI jet must survive 60 s, or you down it first
+# you play the launchers vs the AI jet (user, 2026-10-03: "if launcher is less powerful than jet increase its power
+# to 20% instead of 15% for aspects"): +20% in every aspect for the human launcher side
+LAUNCHER_VS_AI_BUFF = 1.20
+# (user, 2026-10-03: "let jet speed slower by 50% than current speed, also add multi barrel missile launcher with
+# double speed than AI jet"): when you play the launchers the AI jet flies at half speed, and the truck you drive is a
+# multi-barrel launcher (own design, "-M" name): each shot is a rippled salvo whose missiles fly at twice the AI jet's
+# speed (the 30 deg/s turn limit still applies).
+AI_JET_SPEED_FACTOR = 0.5
+YOUR_MBML = {"id": "thunder_mbml", "name": "THUNDER MBML-M", "type": "MBML", "salvo": 4, "speed": 1.0,
+             "trail": [255, 215, 0], "nation": "YOU"}
+MBML_SALVO = 4
+MBML_RIPPLE = 8                # frames between the salvo's missiles leaving the rack
+MBML_RELOAD = 150              # frames between salvos (shortened by the +20%)
+MBML_SPEED_VS_JET = 2.0
 
 
 def human_buff(mode: str, missile_mode: str = "MANUAL") -> float:
@@ -891,6 +1039,7 @@ def jet_loadout(level: int):
         out.extend(munition_stats(dict(m, nation=n["code"])) for m in n["munitions"])
         if n["unlock_level"] <= IR_UNLOCK_LEVEL < n["unlock_level"] + 5 and level >= IR_UNLOCK_LEVEL:
             out.append(munition_stats(dict(GENERIC_IR_MISSILE)))
+    out.extend(munition_stats(dict(s, nation="")) for s in SPECIAL_ORDNANCE if level >= s["unlock_level"])
     return out
 
 
@@ -1252,32 +1401,201 @@ async def main():
 
     # AIR + GROUND: the jet flies in the sky, missiles launch from trucks/silos on the ground
     GROUND_Y = 540
-    sky = pygame.Surface((SCREEN_WIDTH, GROUND_Y))
-    for gy in range(GROUND_Y):
-        t = gy / GROUND_Y
-        sky.fill((int(8 + 22 * t), int(12 + 40 * t), int(30 + 70 * t)), (0, gy, SCREEN_WIDTH, 1))
     clouds = [[random.uniform(0, SCREEN_WIDTH), random.uniform(70, GROUND_Y - 120), random.uniform(0.4, 1.4),
                random.randint(40, 110)] for _ in range(9)]
-    hills = [(x, GROUND_Y - 18 - int(14 * math.sin(x * 0.02) + 8 * math.sin(x * 0.053))) for x in range(0, SCREEN_WIDTH + 20, 20)]
     ground_scroll = 0.0
+    FAR_H = 200                  # height of the far (parallax) layer strip above the ground line
+
+    # BIOMES: the landscape of the current level (biome_index); a new one fades in over 1.5 s.
+    # Only the current and the previous biome's layers are kept in memory.
+    world = {"biome": 0, "prev": None, "fade": 0, "far_off": 0.0, "t": 0}
+    WORLD_FADE = 90
+    biome_cache = {}
+    blend_surf = {"s": None}
+
+    def build_biome_layers(idx):
+        b = BIOMES[idx]
+        rng = random.Random(idx * 7919 + 13)
+        sky = pygame.Surface((SCREEN_WIDTH, GROUND_Y))
+        (r0, g0, b0), (r1, g1, b1) = b["sky"]
+        for gy in range(GROUND_Y):
+            t = gy / GROUND_Y
+            sky.fill((int(r0 + (r1 - r0) * t), int(g0 + (g1 - g0) * t), int(b0 + (b1 - b0) * t)), (0, gy, SCREEN_WIDTH, 1))
+        far = pygame.Surface((SCREEN_WIDTH, FAR_H), pygame.SRCALPHA)
+        W, H, col, kind = SCREEN_WIDTH, FAR_H, b["far"], b["far_kind"]
+        k = 2 * math.pi / W                      # every shape repeats exactly once across the width (seamless scroll)
+        if kind == "sea":
+            pygame.draw.rect(far, col, (0, H - 70, W, 70))
+        elif kind == "skyline":
+            x = 0
+            while x < W:
+                bw, bh = rng.randint(30, 70), rng.randint(40, 150)
+                bw = min(bw, W - x)
+                pygame.draw.rect(far, col, (x, H - bh, bw, bh))
+                for wy in range(H - bh + 8, H - 6, 12):           # lit windows
+                    for wx in range(x + 5, x + bw - 5, 10):
+                        if rng.random() < 0.35:
+                            pygame.draw.rect(far, (200, 190, 110), (wx, wy, 3, 4))
+                x += bw + rng.randint(2, 10)
+        else:
+            pts = []
+            for x in range(0, W + 1, 8):
+                if kind == "hills":
+                    h = 18 + 14 * math.sin(x * k * 5) + 8 * math.sin(x * k * 13)
+                elif kind == "dunes":
+                    h = 40 + 34 * abs(math.sin(x * k * 3)) + 8 * math.sin(x * k * 11)
+                elif kind == "mounds":
+                    h = 14 + 10 * abs(math.sin(x * k * 9))
+                elif kind == "mesa":
+                    h = 95 if math.sin(x * k * 4) > 0.25 else 30 + 6 * math.sin(x * k * 17)
+                elif kind == "peaks":
+                    tri = abs(((x * 7 / W) % 1.0) - 0.5) * 2              # 0..1 zig-zag, 7 peaks
+                    h = 40 + 110 * (1 - tri) + 10 * math.sin(x * k * 23)
+                elif kind == "volcano":
+                    h = 30 + 10 * math.sin(x * k * 7) + max(0.0, 140 - abs(((x / W) % 0.5) * 2 - 0.5) * 520)
+                else:   # canopy: rounded tree crowns
+                    h = 60 + 22 * abs(math.sin(x * k * 41)) + 12 * math.sin(x * k * 6)
+                pts.append((x, H - max(4, int(h))))
+            pygame.draw.polygon(far, col, [(0, H)] + pts + [(W, H)])
+            if kind == "peaks":                                       # snow caps
+                for x, y in pts:
+                    if y < H - 120:
+                        pygame.draw.line(far, (245, 250, 255), (x, y), (x, y + 10), 8)
+            elif kind == "volcano":                                   # glowing craters on the cones
+                for x, y in pts:
+                    if y < H - 150:
+                        pygame.draw.circle(far, (255, 110, 30), (x, y + 2), 5)
+        return {"sky": sky, "far": far}
+
+    def biome_layers(idx):
+        if idx not in biome_cache:
+            for old in [i for i in biome_cache if i not in (world["biome"], world["prev"])]:
+                del biome_cache[old]
+            biome_cache[idx] = build_biome_layers(idx)
+        return biome_cache[idx]
+
+    def draw_ground_detail(surf, b, off):
+        kind, det, edge = b["far_kind"], b["detail"], b["edge"]
+        pygame.draw.rect(surf, b["ground"], (0, GROUND_Y, SCREEN_WIDTH, SCREEN_HEIGHT - GROUND_Y))
+        flick = world["t"]
+        for gx in range(-40, SCREEN_WIDTH + 40, 40):
+            x = gx - off
+            if kind == "sea" and b["name"] == "DEEP OCEAN":           # concrete causeway slabs
+                pygame.draw.line(surf, det, (x, GROUND_Y + 2), (x, SCREEN_HEIGHT), 2)
+            elif kind == "sea":                                       # wet sand ripples
+                pygame.draw.arc(surf, det, (x, GROUND_Y + 14, 22, 10), 0, math.pi, 2)
+            elif kind == "dunes":
+                pygame.draw.arc(surf, det, (x, GROUND_Y + 10, 34, 14), 0, math.pi, 2)
+            elif kind == "mounds":                                    # puddles
+                pygame.draw.ellipse(surf, det, (x + 4, GROUND_Y + 14, 22, 7))
+            elif kind in ("mesa", "peaks"):                           # cracks in rock / ice
+                pygame.draw.lines(surf, det, False, [(x, GROUND_Y + 8), (x + 8, GROUND_Y + 16), (x + 4, GROUND_Y + 26), (x + 14, GROUND_Y + 30)], 1)
+            elif kind == "volcano":                                   # glowing lava cracks
+                glow = det if (flick // 12 + gx // 40) % 3 else edge
+                pygame.draw.lines(surf, glow, False, [(x, GROUND_Y + 10), (x + 10, GROUND_Y + 18), (x + 6, GROUND_Y + 28)], 2)
+            elif kind == "canopy":                                    # grass tufts
+                for dx in (0, 5, 10):
+                    pygame.draw.line(surf, det, (x + dx, GROUND_Y + 24), (x + dx + 3, GROUND_Y + 14), 2)
+            elif kind == "skyline":                                   # road centre line
+                pygame.draw.line(surf, edge, (x, GROUND_Y + 22), (x + 18, GROUND_Y + 22), 3)
+            else:                                                     # grassland (the original look)
+                pygame.draw.line(surf, det, (x, GROUND_Y + 22), (x + 18, GROUND_Y + 22), 2)
+        pygame.draw.line(surf, edge, (0, GROUND_Y), (SCREEN_WIDTH, GROUND_Y), 2)
+
+    def draw_biome(surf, idx):
+        b = BIOMES[idx]
+        layers = biome_layers(idx)
+        surf.blit(layers["sky"], (0, 0))
+        for cl in clouds:
+            pygame.draw.ellipse(surf, b["cloud"], (cl[0], cl[1], cl[3], cl[3] * 0.32))
+            pygame.draw.ellipse(surf, b["cloud"], (cl[0] + cl[3] * 0.25, cl[1] - cl[3] * 0.1, cl[3] * 0.55, cl[3] * 0.3))
+        off = int(world["far_off"])                                   # far layer: slow parallax scroll
+        surf.blit(layers["far"], (-off, GROUND_Y - FAR_H))
+        surf.blit(layers["far"], (SCREEN_WIDTH - off, GROUND_Y - FAR_H))
+        if b["far_kind"] == "sea":                                    # rolling wave crests on the sea
+            for row, y in enumerate(range(GROUND_Y - 62, GROUND_Y - 4, 14)):
+                shift = (world["t"] * (0.6 + row * 0.35)) % 60
+                for x in range(-60, SCREEN_WIDTH + 60, 60):
+                    pygame.draw.arc(surf, b["edge"], (x + shift, y, 26, 8), 0, math.pi, 1)
+        draw_ground_detail(surf, b, ground_scroll)
+
+    def set_biome(idx):
+        """Change the landscape: the new one fades in, and the old craters and smoke go with the old ground."""
+        if idx != world["biome"]:
+            world["prev"], world["biome"], world["fade"] = world["biome"], idx, WORLD_FADE
+            clear_ground_scars()
+
+    def clear_ground_scars():
+        craters.clear()
+        smoke.clear()
+        crater_layer.fill((0, 0, 0, 0))
+
+    # CRATERS + LINGERING SMOKE: every explosion on the ground leaves a scorched crater, and the newest ones keep
+    # smoking, until the biome changes (set_biome) or a new duel round starts
+    CRATER_TOP = GROUND_Y - 12
+    crater_layer = pygame.Surface((SCREEN_WIDTH, 44), pygame.SRCALPHA)
+    craters = []                 # [x, frames to the next puff]
+    smoke = []                   # [x, y, drift, age, life, size]
+    MAX_SMOKING_CRATERS = 20
+    puffs = []
+    for pr in range(5, 25, 2):
+        ps = pygame.Surface((pr * 2, pr * 2), pygame.SRCALPHA)
+        pygame.draw.circle(ps, (85, 85, 90, 120), (pr, pr), pr)
+        puffs.append(ps)
+
+    def add_crater(x, size=1.0):
+        b = BIOMES[world["biome"]]
+        w, h = int(26 * size + 14), int(6 * size + 5)
+        cy = GROUND_Y - CRATER_TOP + 3
+        scorch = tuple(int(c * 0.55) for c in b["ground"])
+        pygame.draw.ellipse(crater_layer, (*scorch, 200), (x - w * 0.75, cy - h * 0.7, w * 1.5, h * 1.4))
+        pygame.draw.ellipse(crater_layer, (18, 15, 14, 235), (x - w / 2, cy - h / 2, w, h))
+        craters.append([x, random.randint(0, 20)])
+        for _ in range(int(4 + 6 * size)):                             # the first thick cloud of smoke
+            smoke.append([x + random.uniform(-12, 12), GROUND_Y - 6, random.uniform(-0.3, 0.3), 0, random.randint(70, 140),
+                          random.randint(3, len(puffs) - 1)])
+
+    def draw_ground_scars():
+        screen.blit(crater_layer, (0, CRATER_TOP))
+        for c in craters[-MAX_SMOKING_CRATERS:]:                       # the newest craters keep smoking
+            c[1] -= 1
+            if c[1] <= 0:
+                c[1] = random.randint(22, 34)
+                smoke.append([c[0] + random.uniform(-6, 6), GROUND_Y - 6, random.uniform(-0.25, 0.25), 0,
+                              random.randint(90, 130), random.randint(0, 4)])
+        for p in smoke[:]:
+            p[3] += 1
+            if p[3] >= p[4]:
+                smoke.remove(p)
+                continue
+            p[0] += p[2] + 0.15
+            p[1] -= 0.55
+            grow = min(len(puffs) - 1, p[5] + p[3] // 30)
+            img = puffs[grow]
+            img.set_alpha(int(255 * (1 - p[3] / p[4])))
+            screen.blit(img, (p[0] - img.get_width() / 2, p[1] - img.get_height() / 2))
 
     def draw_world():
         nonlocal ground_scroll
-        screen.blit(sky, (0, 0))
+        world["t"] += 1
         for cl in clouds:
             cl[0] -= cl[2]
             if cl[0] < -cl[3]:
                 cl[0] = SCREEN_WIDTH + cl[3]
                 cl[1] = random.uniform(70, GROUND_Y - 120)
-            shade = (40, 55, 85)
-            pygame.draw.ellipse(screen, shade, (cl[0], cl[1], cl[3], cl[3] * 0.32))
-            pygame.draw.ellipse(screen, shade, (cl[0] + cl[3] * 0.25, cl[1] - cl[3] * 0.1, cl[3] * 0.55, cl[3] * 0.3))
-        pygame.draw.polygon(screen, (22, 38, 30), [(0, SCREEN_HEIGHT)] + hills + [(SCREEN_WIDTH, SCREEN_HEIGHT)])
-        pygame.draw.rect(screen, (30, 48, 34), (0, GROUND_Y, SCREEN_WIDTH, SCREEN_HEIGHT - GROUND_Y))
         ground_scroll = (ground_scroll + 1.5) % 40
-        for gx in range(-40, SCREEN_WIDTH + 40, 40):
-            pygame.draw.line(screen, (45, 66, 46), (gx - ground_scroll, GROUND_Y + 22), (gx - ground_scroll + 18, GROUND_Y + 22), 2)
-        pygame.draw.line(screen, (70, 100, 70), (0, GROUND_Y), (SCREEN_WIDTH, GROUND_Y), 2)
+        world["far_off"] = (world["far_off"] + 0.3) % SCREEN_WIDTH
+        if world["fade"] > 0 and world["prev"] is not None:            # smooth cross-fade to the new biome
+            world["fade"] -= 1
+            draw_biome(screen, world["prev"])
+            if blend_surf["s"] is None:
+                blend_surf["s"] = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+            draw_biome(blend_surf["s"], world["biome"])
+            blend_surf["s"].set_alpha(int(255 * (1 - world["fade"] / WORLD_FADE)))
+            screen.blit(blend_surf["s"], (0, 0))
+        else:
+            draw_biome(screen, world["biome"])
+        draw_ground_scars()
 
     # Mobile launchers spread over the whole ground: each drives back and forth inside its own
     # stretch, takes many hits to destroy (tougher every level) and is rebuilt for the next wave.
@@ -1320,16 +1638,36 @@ async def main():
             if is_boss_wave and i == boss_site():
                 ln["x"] = float(ln["home"])
                 continue
+            if modes["side"] == "LAUNCHER" and i == cmd["sel"]:   # your truck: you drive it along the whole ground
+                if cmd["drive"]:
+                    ln["vx"] = math.copysign(abs(ln["vx"]) or 0.8, cmd["drive"])   # (cab faces the way you drive)
+                ln["x"] = max(36.0, min(SCREEN_WIDTH - 36.0, ln["x"] + cmd["drive"] * DUEL_DRIVE * launcher_buff()))
+                continue
             ln["x"] += ln["vx"]
-            if ln["x"] < ln["lo"] or ln["x"] > ln["hi"]:
-                ln["vx"] = -ln["vx"]
-                ln["x"] = max(ln["lo"], min(ln["hi"], ln["x"]))
+            if ln["x"] < ln["lo"]:            # back into its own stretch (gently: a truck pushed aside drives back)
+                ln["vx"] = abs(ln["vx"])
+            elif ln["x"] > ln["hi"]:
+                ln["vx"] = -abs(ln["vx"])
             elif random.random() < 0.004:
                 ln["vx"] = -ln["vx"]          # change direction now and then
             for dl in drone_launchers:        # never drives through a drone launcher: turns back before it
                 if dl.alive and abs(dl.x - ln["x"]) < 52 and (dl.x - ln["x"]) * ln["vx"] > 0:
                     ln["vx"] = -ln["vx"]
                     break
+        # your truck shoulders the others aside as it drives (trucks and drone launchers never overlap it)
+        me = launchers[cmd["sel"] % len(launchers)] if modes["side"] == "LAUNCHER" and launchers else None
+        if me is not None and me["alive"]:
+            for j, o in enumerate(launchers):
+                if o is me or not o["alive"] or (is_boss_wave and j == boss_site()) or abs(o["x"] - me["x"]) >= 62:
+                    continue
+                side = 1.0 if o["x"] >= me["x"] else -1.0
+                o["x"] = max(30.0, min(SCREEN_WIDTH - 30.0, me["x"] + side * 62))
+                o["vx"] = math.copysign(abs(o["vx"]), side)
+            for dl in drone_launchers:
+                if dl.alive and abs(dl.x - me["x"]) < 50:
+                    side = 1.0 if dl.x >= me["x"] else -1.0
+                    dl.x = max(24.0, min(SCREEN_WIDTH - 24.0, me["x"] + side * 50))
+                    dl.vx = math.copysign(abs(dl.vx), side)
         for e in enemies:                     # a waiting missile rides on its launcher
             if e.launch_delay > 0 and e.site is not None:
                 e.x = launchers[e.site]["x"] - e.width // 2 + e.barrel_off
@@ -1358,6 +1696,8 @@ async def main():
                 pygame.draw.rect(screen, (70, 80, 60), (lx - 30, GROUND_Y - 16, 60, 14), border_radius=3)  # launcher truck
                 pygame.draw.rect(screen, (90, 100, 75), (cab_x, GROUND_Y - 26, 16, 12), border_radius=2)  # cab
                 sysd = ln.get("system")
+                if modes["side"] == "LAUNCHER" and i == cmd["sel"]:
+                    sysd = YOUR_MBML                     # the truck you drive is your multi-barrel launcher
                 if sysd and sysd["type"] == "MBML":   # multi-barrel rack: a block of launch tubes
                     pygame.draw.rect(screen, (105, 112, 95), (lx - 16, GROUND_Y - 34, 26, 18), border_radius=2)
                     for k in range(4):
@@ -1366,8 +1706,13 @@ async def main():
                     pygame.draw.line(screen, (120, 125, 110), (lx - 4, GROUND_Y - 16), (lx - 4, GROUND_Y - 58), 4)  # launch rail
                 for wx in (lx - 20, lx, lx + 20):
                     pygame.draw.circle(screen, (25, 25, 28), (wx, GROUND_Y - 1), 6)
-            if ln.get("system"):   # nation + system name under the truck, in its trail colour
-                tag = tag_font.render(f"{ln['system']['nation']} {ln['system']['name']}", True, ln["system"]["trail"])
+            if modes["side"] == "LAUNCHER" and i == cmd["sel"] and game_state == "CAMPAIGN":   # the truck you drive
+                pygame.draw.polygon(screen, (255, 230, 80), [(lx, GROUND_Y - 74), (lx - 9, GROUND_Y - 88), (lx + 9, GROUND_Y - 88)])
+                t = tag_font.render("YOU", True, (255, 230, 80))
+                screen.blit(t, t.get_rect(center=(lx, GROUND_Y - 96)))
+            shown = YOUR_MBML if modes["side"] == "LAUNCHER" and i == cmd["sel"] else ln.get("system")
+            if shown:   # nation + system name under the truck, in its trail colour
+                tag = tag_font.render(f"{shown['nation']} {shown['name']}", True, shown["trail"])
                 screen.blit(tag, tag.get_rect(center=(lx, GROUND_Y + 14)))
 
     current_level = 1
@@ -1375,6 +1720,37 @@ async def main():
     active_mutator = "NONE"
     saved_data = load_save_data()
     modes = load_control_modes()   # jet / duel missile AUTO-MANUAL and AI difficulty (needed by the first wave)
+
+    def ground_difficulty():
+        """The AI EASY / NORMAL switch weakens the computer's side only: when you play the launchers (side LAUNCHER)
+        that is the jet, so the ground side you command stays at full strength."""
+        return "NORMAL" if modes["side"] == "LAUNCHER" else modes["difficulty"]
+
+    def ai_jet():
+        """You play the launchers (campaign and duel) and the computer flies the jet."""
+        return modes["side"] == "LAUNCHER"
+
+    def launcher_buff():
+        """+20% for the human launcher side vs the AI jet (1.0 when a human flies the jet)."""
+        return LAUNCHER_VS_AI_BUFF if ai_jet() else 1.0
+
+    def ai_jet_top_speed():
+        return p1_speed * (jet_pace(current_level) if game_state == "CAMPAIGN" else 1.0) * AI_JET_SPEED_FACTOR
+
+    def mbml_salvo(launch_x, site=None):
+        """Your multi-barrel launcher fires: MBML_SALVO missiles, rippled, each at twice the AI jet's speed."""
+        out = []
+        for k in range(MBML_SALVO):
+            e = MissileEnemy(current_level, launch_x=launch_x, ground_y=GROUND_Y, launch_delay=6 + k * MBML_RIPPLE,
+                             system=YOUR_MBML, difficulty=ground_difficulty())
+            e.site = site
+            e.barrel_off = (k - (MBML_SALVO - 1) / 2) * 7
+            e.flank_angle = random.uniform(0, 2 * math.pi)
+            e.speed_stat = MBML_SPEED_VS_JET * ai_jet_top_speed()
+            e.fuse_factor *= launcher_buff()      # (+20% reach; its speed is set exactly: 2x the AI jet)
+            e.side_buffed = True
+            out.append(e)
+        return out
 
     break_timer = 0
     break_winner = "P1"
@@ -1401,10 +1777,12 @@ async def main():
     sky_esc = {"t": 0, "x": 0.0, "ret": False}   # "ret": turning back down -- keys / autopilot wait until it is back                 # frames the jet has spent above the top of the screen (sky escape)
     AUTOPILOT_TURN = 0.065                   # max heading change per frame (radians)
 
-    def autopilot_velocity(cx, cy, speed, threats):
-        """Next velocity for the hands-off jet. threats = [(x, y, vx, vy), ...] of incoming missiles."""
+    def autopilot_velocity(cx, cy, speed, threats, attack=None):
+        """Next velocity for the hands-off jet. threats = [(x, y, vx, vy), ...] of incoming missiles.
+        attack = (x, y) of a ground target the AI jet makes diving gun runs at (duel with the AI flying the jet)."""
         ap = autopilot
         ap["t"] -= 1
+        ap["atk_cd"] = max(0, ap.get("atk_cd", 0) - 1)
         cruise = speed * 0.62
         facing_right = math.cos(ap["head"]) >= 0
         level_head = 0.0 if facing_right else math.pi
@@ -1428,6 +1806,9 @@ async def main():
             ap["break_head"] = path + side * math.pi / 2
             ap["mode"], ap["t"] = "break", 40
 
+        # AI JET: when nothing is closing in, dive at the launcher with the guns (it pulls up near the ground)
+        if attack and not near and ap["atk_cd"] == 0 and ap["mode"] in ("cruise", "climb", "roll") and cy < GROUND_Y - 200:
+            ap["mode"], ap["t"], ap["atk_cd"] = "attack", 90, 150
         # pick the next manoeuvre when the current one is finished
         if ap["t"] <= 0 and ap["mode"] != "loop":
             ap["mode"] = random.choice(["cruise", "cruise", "climb", "dive", "loop", "roll"])
@@ -1456,6 +1837,9 @@ async def main():
         elif mode == "break":
             want = ap["break_head"]
             spd = speed * 1.1
+        elif mode == "attack":   # nose down at a point just above the target
+            want = math.atan2(attack[1] - 40 - cy, attack[0] - cx) if attack else level_head
+            spd = cruise * 1.3
         elif mode == "escape":   # full power, nose straight up, out of the top of the sky
             want = -math.pi / 2 + (0.15 if facing_right else -0.15)
             spd = speed * 1.15
@@ -1530,7 +1914,9 @@ async def main():
     p2_speed = 4.4
     p2_max_hp = 12                     # hits: the duel launcher is armoured (2 hits ended a round in ~2 s)
     p2_hp = p2_max_hp
-    DUEL_LEVEL = 30                    # missile / drone strength in the duel (medium-range missiles)
+    # DUEL LEVEL (user, 2026-10-03: "all levels displayed at the bottom, which I want to play is my choice"): the duel
+    # has the level strip too; the chosen level (current_level) sets its missiles, drones, landscape and jet colour.
+    duel_req = {"restart": False}      # a level jump or side swap mid-duel: start a fresh round after the events
     DUEL_DRIVE = 2.2                   # launcher driving speed, px per frame (x1.8 when it sprints from a shot)
     DUEL_MISSILE_RELOAD = 120          # frames between its missiles (2 s)
     DUEL_DRONE_RELOAD = 240            # frames between its drones (4 s)
@@ -1552,7 +1938,7 @@ async def main():
         mutator = active_mutator if lvl > 100 else "NONE"
         e = MissileEnemy(lvl, is_boss=is_boss, mutator=mutator, launch_x=launchers[site]["x"],
                          ground_y=GROUND_Y, launch_delay=delay, system=None if is_boss else launchers[site].get("system"),
-                         difficulty=modes["difficulty"])
+                         difficulty=ground_difficulty())
         e.site = site
         e.flank_angle = flank_angle if flank_angle is not None else random.uniform(0, 2 * math.pi)
         return e
@@ -1573,7 +1959,19 @@ async def main():
     silos = []
     p1_ordnance = []                      # jet munitions in flight
     p1_ammo = {}                          # munition id -> rounds left this wave
-    ord_sel = {"i": 0, "cd": 0, "fire": False}
+    ord_sel = {"i": 0, "cd": 0, "fire": False, "buster_cd": 0}
+    # YOU = LAUNCHERS in the campaign (side LAUNCHER, AI jet): you drive the selected truck (TAB / E = next truck) and
+    # fire extra missiles / drones from your wave stock on top of the launchers' own AI fire. Down the AI jet = next
+    # level; if the jet clears the wave you play the level again.
+    cmd = {"sel": 0, "timer": LAUNCHER_WAVE_FRAMES, "missile_cd": 0, "drone_cd": 0, "want_missile": False,
+           "want_drone": False, "drive": 0.0, "ai_ord_cd": 240}
+
+    def campaign_jet_buff():
+        """+15% for a human jet vs the AI; the AI jet (you command the launchers) gets none."""
+        return 1.0 if modes["side"] == "LAUNCHER" else human_buff("CAMPAIGN")
+    chutes = []                           # cluster bomblets floating down on their parachutes
+    laser_bat = LaserBattery()
+    shake = {"t": 0}                      # screen shake frames (bunker buster)
     flir = {"on": False, "energy": 100.0}
     notices = []                          # unlock messages, shown as floating text by the main loop
     drone_launchers = []
@@ -1591,7 +1989,7 @@ async def main():
             drone_launchers.append(DroneLauncher(x, drones_per_launcher(lvl), first_delay=90 + i * 45 + random.randint(0, 60),
                                                  missile_delay=480 + i * 90 + random.randint(0, 180),
                                                  has_missile=lvl >= DRONE_MISSILE_LEVEL,
-                                                 gap=difficulty_factors(modes["difficulty"])["drone_gap"]))
+                                                 gap=difficulty_factors(ground_difficulty())["drone_gap"]))
 
     def spawn_silos(lvl):
         silos.clear()
@@ -1610,7 +2008,7 @@ async def main():
     def spawn_campaign_wave(lvl):
         nonlocal p1_max_hp
         # the jet grows tougher with the level too: max HP 300 -> 600 by level 101
-        p1_max_hp = round((300 + min(300, (lvl - 1) * 3)) * human_buff("CAMPAIGN"))
+        p1_max_hp = round((300 + min(300, (lvl - 1) * 3)) * campaign_jet_buff())
         reset_launchers(lvl)
         enemies = []
         is_boss = (lvl % 10 == 0)
@@ -1630,7 +2028,7 @@ async def main():
         # the jet's ordnance: full racks every wave
         p1_ammo.clear()
         for m in jet_loadout(lvl):
-            p1_ammo[m["id"]] = round(m["ammo"] * human_buff("CAMPAIGN"))
+            p1_ammo[m["id"]] = round(m["ammo"] * campaign_jet_buff())
         p1_ordnance.clear()
         ord_sel["i"] = min(ord_sel["i"], max(0, len(p1_ammo) - 1))
         for n in ARSENAL["nations"]:
@@ -1639,6 +2037,16 @@ async def main():
                                 tuple(n["color"])))
         if lvl == IR_UNLOCK_LEVEL:
             notices.append(("UNLOCKED: IR HEAT-SEEKER + FLIR POD [X] + UNDERGROUND SILOS", (255, 90, 160)))
+        for s in SPECIAL_ORDNANCE:
+            if s["unlock_level"] == lvl:
+                key = {"CLUSTER": " [Y]", "BUSTER": " [U]"}.get(s["role"], " [G/R]")
+                notices.append((f"UNLOCKED: {s['name']}{key}", tuple(s["trail"])))
+        ord_sel["buster_cd"] = 0
+        chutes.clear()
+        # you start in the middle truck -- never the fixed boss silo when there is a truck that can drive
+        cmd.update(sel=(len(launchers) // 2 + (1 if lvl % 10 == 0 and len(launchers) > 1 else 0)) % len(launchers), timer=LAUNCHER_WAVE_FRAMES,
+                   missile_cd=60, drone_cd=120, want_missile=False, want_drone=False, ai_ord_cd=240)
+        set_biome(biome_index(lvl))
         return enemies
 
     def damage_launcher(i, hits=1):
@@ -1810,13 +2218,31 @@ async def main():
         if p1_ammo.get(m["id"], 0) <= 0:
             floating_texts.append([f"{m['name']}: EMPTY", nx - 30, ny - 30, (160, 165, 180), 25])
             return
+        if m["role"] == "BUSTER" and ord_sel["buster_cd"] > 0:      # strictly one bunker buster per 10 s
+            floating_texts.append([f"{m['name']}: READY IN {ord_sel['buster_cd'] // 60 + 1}s", nx - 40, ny - 30, (200, 200, 210), 30])
+            return
         p1_ammo[m["id"]] -= 1
         ord_sel["cd"] = int(ORDNANCE_COOLDOWN / buff)
+        if m["role"] == "SWARM":   # the pod opens at once: small air-to-ground rockets, one per ground target
+            pts = ground_targets()
+            for k in range(m["rockets"]):
+                r = munition_stats({"id": m["id"], "name": m["name"], "role": "AG", "trail": m["trail"], "nation": "",
+                                    "blast": 22, "vmax": 12.0})
+                r.update(x=nx, y=ny, heading=head + (k - (m["rockets"] - 1) / 2) * 0.18, speed=max(2.0, jet_speed),
+                         burn_left=r["burn"], age=0, los=None, lock=None, pts=[],
+                         aim=pts[k % len(pts)] if pts else None, dmg=int(40 * level_power(current_level) * buff))
+                p1_ordnance.append(r)
+            SFX.snd_ordnance.play()
+            return
         o = dict(m)
         o.update(x=nx, y=ny, heading=head, speed=max(2.0, jet_speed), burn_left=m.get("burn", 0), age=0,
                  los=None, lock=None, aim=None, pts=[], dmg=int(60 * level_power(current_level) * buff))
         if m["kind"] == "bomb":
             o["vx"], o["vy"] = math.cos(head) * jet_speed, math.sin(head) * jet_speed + 0.5
+        if m["role"] == "BUSTER":
+            ord_sel["buster_cd"] = BUSTER_COOLDOWN
+            o["vy"] = max(o["vy"], 6.0)          # a heavy penetrator: it drops fast
+            o["dig"] = -1                        # -1 = still falling; then frames underground before it goes off
         if m["target"] == "air" and m["guidance"] == "radar":     # radar missile: locks the nearest missile ahead
             air = flying_missiles()
             ahead = [e for e in air if abs(angle_diff(math.atan2(e.y + e.height / 2 - ny, e.x + e.width / 2 - nx), head)) < math.radians(60)]
@@ -1851,8 +2277,10 @@ async def main():
                 tgt = None
                 if o["target"] == "air":
                     if o["guidance"] == "ir":      # heat seeker: hottest = nearest lit motor inside its seeker cone
-                        tgt = ir_pick_target(o["x"], o["y"], o["heading"],
-                                             [(e.x + e.width / 2, e.y + e.height / 2) for e in air],
+                        heat = [(e.x + e.width / 2, e.y + e.height / 2) for e in air]
+                        if o.get("hunts_drones"):  # the sidewinder also locks on to drones' engines
+                            heat += [(d.x, d.y) for d in drones]
+                        tgt = ir_pick_target(o["x"], o["y"], o["heading"], heat,
                                              o["seeker_fov_deg"], o["seeker_range"])
                     else:                          # radar: keeps its lock; ECM jamming blinds it
                         if o["lock"] not in air or o["lock"] not in campaign_enemies:
@@ -1882,6 +2310,11 @@ async def main():
                                 floating_texts.append([f"{o['name']} KILL +{o['dmg']}", o["x"], o["y"] - 15, tuple(o["trail"]), 30])
                             gone = "hit"
                             break
+                    if gone != "hit" and o.get("hunts_drones"):
+                        d = next((d for d in drones if math.hypot(d.x - o["x"], d.y - o["y"]) < ORDNANCE_FUSE), None)
+                        if d:
+                            kill_drone(d, o["x"], o["y"])
+                            gone = "hit"
                     if gone != "hit" and o["y"] >= GROUND_Y - 6:
                         blasts.append([o["x"], GROUND_Y - 6, 0, 0.6])
                         gone = "hit"
@@ -1893,6 +2326,15 @@ async def main():
                     if struck:
                         ground_blast(o["x"], min(o["y"], GROUND_Y - 10), o["blast"], o["hits"])
                         gone = "hit"
+            elif o["role"] == "BUSTER" and o["dig"] >= 0:   # bunker buster underground: delayed seismic blast
+                o["dig"] += 1
+                if o["dig"] >= BUSTER_FUSE_DELAY:
+                    for s in silos:                          # the shockwave finds and wrecks hidden silos too
+                        if s.alive and abs(s.x - o["x"]) <= o["blast"] + 24:
+                            s.revealed = True
+                    ground_blast(o["x"], GROUND_Y - 6, o["blast"], o["hits"])
+                    shake["t"] = 30
+                    gone = "hit"
             else:   # bomb: released at the jet's velocity, gravity + air drag; guided ones steer gently
                 o["vy"] += o["gravity"]
                 o["vx"] *= 1 - BOMB_DRAG
@@ -1907,13 +2349,33 @@ async def main():
                 o["x"] += o["vx"]
                 o["y"] += o["vy"]
                 o["heading"] = math.atan2(o["vy"], o["vx"])
-                if o["y"] >= GROUND_Y - 6:
+                if o["role"] == "CLUSTER" and o["y"] >= GROUND_Y - o["burst_h"]:
+                    # burst: the bomblets spread out and float down on colourful parachutes
+                    for k in range(o["bomblets"]):
+                        chutes.append({"x": o["x"], "y": o["y"], "vx": o["vx"] * 0.3 + (k - (o["bomblets"] - 1) / 2) * 0.55,
+                                       "color": CHUTE_COLORS[k % len(CHUTE_COLORS)], "blast": o["blast"], "hits": o["hits"],
+                                       "sway": random.uniform(0, math.tau)})
+                    blasts.append([o["x"], o["y"], 0, 0.4])
+                    SFX.snd_split.play()
+                    gone = "hit"
+                elif o["role"] == "BUSTER" and o["y"] >= GROUND_Y - 6:
+                    o["y"], o["dig"] = GROUND_Y + 4, 0       # buries itself; goes off BUSTER_FUSE_DELAY frames later
+                    SFX.snd_burrow.play()
+                elif o["y"] >= GROUND_Y - 6:
                     ground_blast(o["x"], GROUND_Y - 6, o["blast"], o["hits"])
                     gone = "hit"
             if not (-60 <= o["x"] <= SCREEN_WIDTH + 60) or o["y"] < -200:
                 gone = True
             if gone:
                 p1_ordnance.remove(o)
+        for c in chutes[:]:                     # cluster bomblets: slow descent with a gentle sway, blast on landing
+            c["sway"] += 0.06
+            c["vx"] *= 0.985
+            c["x"] += c["vx"] + math.sin(c["sway"]) * 0.4
+            c["y"] += CLUSTER_CHUTE_FALL
+            if c["y"] >= GROUND_Y - 6:
+                chutes.remove(c)
+                ground_blast(c["x"], GROUND_Y - 6, c["blast"], c["hits"])
 
     def draw_ordnance():
         for o in p1_ordnance:
@@ -1926,10 +2388,22 @@ async def main():
                     pygame.draw.line(screen, (255, 200, 90), (o["x"] - dx * 6, o["y"] - dy * 6), (o["x"] - dx * 14, o["y"] - dy * 14), 3)
                 pygame.draw.line(screen, (225, 228, 235), (o["x"] - dx * 6, o["y"] - dy * 6), (o["x"] + dx * 6, o["y"] + dy * 6), 3)
                 pygame.draw.circle(screen, col, (int(o["x"] + dx * 6), int(o["y"] + dy * 6)), 2)
+            elif o["role"] == "BUSTER":   # long, heavy penetrator (a dust plume while it digs in)
+                if o["dig"] >= 0:
+                    pygame.draw.circle(screen, (140, 120, 90), (int(o["x"]), GROUND_Y - 4), 8 + o["dig"] // 3)
+                else:
+                    pygame.draw.line(screen, (90, 92, 100), (o["x"] - dx * 12, o["y"] - dy * 12), (o["x"] + dx * 9, o["y"] + dy * 9), 6)
+                    pygame.draw.line(screen, col, (o["x"] - dx * 12, o["y"] - dy * 12), (o["x"] - dx * 16, o["y"] - dy * 16), 3)
             else:
                 pygame.draw.circle(screen, (60, 64, 70), (int(o["x"]), int(o["y"])), 5)
                 pygame.draw.circle(screen, col, (int(o["x"]), int(o["y"])), 5, 1)
                 pygame.draw.line(screen, col, (o["x"] - dx * 5, o["y"] - dy * 5), (o["x"] - dx * 10, o["y"] - dy * 10), 2)
+        for c in chutes:                  # colourful parachute canopy, suspension lines and the bomblet
+            x, y = c["x"], c["y"]
+            pygame.draw.arc(screen, c["color"], (x - 12, y - 18, 24, 14), 0, math.pi, 3)
+            pygame.draw.line(screen, (200, 200, 200), (x - 12, y - 11), (x, y), 1)
+            pygame.draw.line(screen, (200, 200, 200), (x + 12, y - 11), (x, y), 1)
+            pygame.draw.circle(screen, (40, 40, 40), (int(x), int(y)), 4)
 
     def draw_silos():
         for s in silos:
@@ -1994,6 +2468,8 @@ async def main():
     def draw_blasts():
         for bl in blasts[:]:
             bl[2] += 1
+            if bl[2] == 1 and bl[1] >= GROUND_Y - 30:   # it went off on the ground: a crater that keeps smoking
+                add_crater(bl[0], bl[3])
             if bl[2] > BLAST_FRAMES:
                 blasts.remove(bl)
                 continue
@@ -2011,8 +2487,14 @@ async def main():
         p1_split_timer = 0
 
         update_save_data(total_score, current_level)
-        if origin_mode == "CAMPAIGN":            # this player's own record, under their name
+        if origin_mode == "CAMPAIGN" and ai_jet():   # you command the launchers: your level counts when you down the jet
+            if winner == "P2":
+                record_result(names[0], level=current_level + 1)
+        elif origin_mode == "CAMPAIGN":            # this player's own record, under their name
             record_result(names[0], score=total_score, level=current_level)
+        elif ai_jet():                           # the human drove the launcher against the AI jet
+            if winner == "P2":
+                record_result(names[0], win=True)
         elif winner == "P1":
             record_result(names[0], win=True)
         elif modes["missile"] == "MANUAL":       # a human drove the launcher: the win is theirs
@@ -2054,6 +2536,52 @@ async def main():
         active_decoys.clear()
         p1_split_timer = 0
 
+    # PILOT EJECTION (user, 2026-10-03): a jet brought down in the air throws its pilot out, who floats down under a
+    # seven-colour rainbow parachute. The pilot stays on screen for PILOT_FRAMES (10 s) -- through the crash, the
+    # round break and while the new jet takes off -- touching down near the end and then disappearing.
+    PILOT_FRAMES = 600
+    PILOT_CHUTE_OPEN = 25
+    RAINBOW = [(255, 0, 0), (255, 127, 0), (255, 255, 0), (0, 200, 0), (0, 90, 255), (75, 0, 130), (148, 0, 211)]
+    pilots = []
+
+    def draw_pilots():
+        for pl in pilots[:]:
+            pl["t"] += 1
+            if pl["t"] >= PILOT_FRAMES:
+                pilots.remove(pl)
+                continue
+            ground = GROUND_Y - 14
+            if pl["t"] < PILOT_CHUTE_OPEN:                        # thrown up and clear of the wreck by the seat
+                pl["vy"] += 0.15
+            elif pl["y"] < ground:                                 # under the canopy: lands about 9 s in
+                pl["vy"] = max(0.25, (ground - pl["y"]) / max(1, PILOT_FRAMES - 60 - pl["t"]))
+                pl["sway"] += 0.05
+                pl["vx"] *= 0.98
+            else:
+                pl["vy"], pl["vx"] = 0.0, 0.0
+            pl["x"] += pl["vx"] + (math.sin(pl["sway"]) * 0.5 if pl["y"] < ground else 0)
+            pl["y"] = min(ground, pl["y"] + pl["vy"])
+            x, y = int(pl["x"]), int(pl["y"])
+            landed = pl["y"] >= ground
+            if pl["t"] >= PILOT_CHUTE_OPEN and not landed:         # rainbow canopy: 7 coloured panels + lines
+                cx, cy, r = x, y - 30, 24
+                for k, col in enumerate(RAINBOW):
+                    a0 = math.pi + k * math.pi / 7
+                    a1 = math.pi + (k + 1) * math.pi / 7
+                    pygame.draw.polygon(screen, col, [(cx, cy)] + [(cx + math.cos(a0 + (a1 - a0) * s / 4) * r,
+                                                                    cy + math.sin(a0 + (a1 - a0) * s / 4) * r * 0.75)
+                                                                   for s in range(5)])
+                for lx in (cx - r, cx - r // 2, cx + r // 2, cx + r):
+                    pygame.draw.line(screen, (230, 230, 230), (lx, cy), (x, y - 8), 1)
+            elif landed:                                           # the folded canopy lies beside the pilot
+                for k, col in enumerate(RAINBOW):
+                    pygame.draw.line(screen, col, (x + 8 + k * 2, y + 12), (x + 9 + k * 2, y + 6), 2)
+            pygame.draw.circle(screen, (235, 235, 240), (x, y - 6), 4)              # helmet
+            pygame.draw.line(screen, (60, 90, 60), (x, y - 2), (x, y + 6), 3)        # flight suit
+            pygame.draw.line(screen, (60, 90, 60), (x, y + 6), (x - 3, y + 13), 2)
+            pygame.draw.line(screen, (60, 90, 60), (x, y + 6), (x + 3, y + 13), 2)
+            pygame.draw.line(screen, (60, 90, 60), (x - 5, y - 3 if landed else y - 9), (x + 5, y - 3 if landed else y - 9), 2)
+
     # JET CRASH: when the jet is shot down it catches fire, spins and falls, then explodes
     # on the ground like a fire bomb before the round ends
     crash = {}
@@ -2062,6 +2590,9 @@ async def main():
         nonlocal game_state
         if game_state not in ("CAMPAIGN", "DUEL"):
             return
+        if p1_y + 40 < GROUND_Y - 80:          # brought down in the air: the pilot ejects (user, 2026-10-03)
+            pilots.append({"x": p1_x + 50, "y": max(20.0, p1_y + 40), "vx": random.uniform(-0.6, 0.6), "vy": -3.2,
+                           "t": 0, "sway": 0.0})
         crash.clear()
         crash.update({"x": p1_x + 50, "y": p1_y + 40, "vx": random.uniform(0.8, 2.2), "vy": -2.5, "rot": 0.0,
                       "phase": "fall", "boom": 0, "fire": [], "origin": origin, "level_boss": current_level % 10 == 0})
@@ -2079,6 +2610,9 @@ async def main():
     def jump_to_level(lvl):
         nonlocal current_level, campaign_enemies
         current_level = max(1, lvl)
+        if game_state == "DUEL":           # the duel at another level: a fresh round there
+            duel_req["restart"] = True
+            return
         campaign_enemies = spawn_campaign_wave(current_level)
         reset_positions()
 
@@ -2103,7 +2637,7 @@ async def main():
     # ======================================================================
     MOBILE = detect_mobile()
     touch = {"on": MOBILE, "stick_id": None, "origin": (0.0, 0.0), "vec": (0.0, 0.0),
-             "fire_ids": set(), "shield_ids": set(), "finger_seen": False}
+             "fire_ids": set(), "shield_ids": set(), "laser_ids": set(), "drive": {}, "finger_seen": False}
     STICK_R = 70
     FIRE_C, FIRE_R = (715 + XR, 480), 58
     TOUCH_BUTTONS = [   # label, key it presses (None = held shield), centre, radius
@@ -2117,9 +2651,22 @@ async def main():
         ("MSL", pygame.K_r, (695 + XR, 312), 26),       # launch the selected munition
         ("FLIR", pygame.K_x, (760 + XR, 312), 26),      # FLIR pod on/off (1P, level 10+)
         ("SAFE", pygame.K_b, (565 + XR, 312), 26),      # SAFEGUARD: 3 s, every missile / drone in the air goes down
+        ("LASER", "LASER", (528 + XR, 470), 26),        # laser ray, held (5 s max, then 10 s cooldown)
+    ]
+
+    # YOU = LAUNCHER (AI jet) on a phone: drive left / right with the left thumb, MISSILE and DRONE on the right
+    TOUCH_LAUNCHER_BUTTONS = [
+        ("<", "DRIVE_L", (75, 495), 46),
+        (">", "DRIVE_R", (185, 495), 46),
+        ("MISSILE", pygame.K_UP, FIRE_C, FIRE_R),
+        ("DRONE", pygame.K_DOWN, (598 + XR, 522), 34),
     ]
 
     def visible_touch_buttons():
+        if game_state == "DUEL" and ai_jet():
+            return TOUCH_LAUNCHER_BUTTONS
+        if game_state == "CAMPAIGN" and ai_jet():     # + NEXT: drive the next truck
+            return TOUCH_LAUNCHER_BUTTONS + [("NEXT", pygame.K_TAB, (695 + XR, 378), 30)]
         out = []
         for b in TOUCH_BUTTONS:
             if b[0] in ("WPN", "MSL") and not (game_state == "CAMPAIGN" and p1_ammo):
@@ -2137,22 +2684,45 @@ async def main():
     MODE_MSL_BTN = pygame.Rect(288 + XC, 482, 224, 22)      # start screen: DUEL MISSILE MANUAL / AUTO
     MODE_DIFF_BTN = pygame.Rect(522 + XC, 482, 223, 22)     # start screen: AI EASY / NORMAL
     CONTINUE_BTN = pygame.Rect(75 + XC, 436, 295, 26)       # inside the campaign card: continue from the best level
+    SIDE_BTN = pygame.Rect(430 + XC, 436, 295, 26)          # inside the duel card: you play the JET or the LAUNCHER
     TOUCH_PAUSE = pygame.Rect(SCREEN_WIDTH // 2 - 31, 80, 62, 24)
+    TOUCH_SWAP = pygame.Rect(SCREEN_WIDTH // 2 + 41, 80, 62, 24)     # duel: swap sides
     if MOBILE:
         modes["missile"] = "AUTO"   # phones: always player vs AI (user, 2026-10-03), no second human player
 
     def pbuff():
-        """The player's vs-AI bonus right now (1.15 vs the computer, 1.0 in a human-vs-human duel)."""
+        """The jet's vs-AI bonus right now (1.15 for a human jet vs the computer, 1.0 in a human-vs-human duel
+        and for the AI jet -- then the human launcher gets the +15% instead, see launcher_buff)."""
+        if game_state in ("CAMPAIGN", "DUEL") and ai_jet():
+            return 1.0
         return human_buff(game_state, modes["missile"])
 
+
+    def launcher_who():
+        """Who plays the launcher side: AI (you fly the jet), YOU (the AI flies the jet), FRIEND (2 players)."""
+        if modes["side"] == "LAUNCHER":
+            return "YOU"
+        return "AI" if modes["missile"] == "AUTO" else "FRIEND"
+
     def toggle_control(which):
-        if which == "missile" and MOBILE:
-            floating_texts.append(["PHONE: ALWAYS YOU vs AI", SCREEN_WIDTH // 2 - 90, 230, (255, 230, 120), 50])
+        if which == "missile":
+            # K / the LAUNCHER switch cycles AI -> YOU -> FRIEND (phones: AI <-> YOU, there is no second player).
+            # "YOU" is the same as YOU PLAY: LAUNCHERS (key 4).
+            order = ["AI", "YOU"] if MOBILE else ["AI", "YOU", "FRIEND"]
+            nxt = order[(order.index(launcher_who()) + 1) % len(order)] if launcher_who() in order else "AI"
+            modes["side"] = "LAUNCHER" if nxt == "YOU" else "JET"
+            modes["missile"] = "MANUAL" if nxt == "FRIEND" else "AUTO"
+            save_control_modes(modes)
+            if game_state in ("CAMPAIGN", "DUEL"):
+                floating_texts.append([f"LAUNCHER: {nxt}", SCREEN_WIDTH // 2 - 50, 230, (255, 230, 120), 50])
+                duel_req["restart"] = True     # the sides changed: a fresh round / level
             return
+        if which == "side" and MOBILE:
+            modes["missile"] = "AUTO"
         modes[which] = toggle_mode(modes[which])
         save_control_modes(modes)                 # (no sound: sounds are only for actions -- user rule)
         if game_state in ("CAMPAIGN", "DUEL"):
-            name = {"jet": "JET", "missile": "DUEL LAUNCHER", "difficulty": "AI"}[which]
+            name = {"jet": "JET", "missile": "DUEL LAUNCHER", "difficulty": "AI", "side": "YOU PLAY"}[which]
             floating_texts.append([f"{name}: {modes[which]}", SCREEN_WIDTH // 2 - 50, 230, (255, 230, 120), 50])
             if which == "difficulty" and game_state == "CAMPAIGN":
                 floating_texts.append(["(from the next wave)", SCREEN_WIDTH // 2 - 70, 250, (200, 200, 210), 50])
@@ -2205,7 +2775,12 @@ async def main():
         return max(1, int(records.get(names[0], {}).get("best_level", 1)))
 
     def p2_display_name():
+        if ai_jet():
+            return names[0]                          # the human drives the launcher
         return "AI" if modes["missile"] == "AUTO" else names[1]
+
+    def jet_display_name():
+        return "AI" if ai_jet() else names[0]
 
     def finish_name_edit(text=None):
         who = name_edit["who"]
@@ -2239,8 +2814,72 @@ async def main():
             return "touch"
         return "pad" if joysticks else "keys"
 
-    def post_key(k):
-        pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=k, mod=0, unicode="", scancode=0))
+    def post_key(k, ai=False):
+        """ai=True: a press made by the computer pilot (the AI jet); those pass the you-are-the-launcher key filter."""
+        pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=k, mod=0, unicode="", scancode=0, ai=ai))
+
+    ai_pilot = {"flare_cd": 0, "heal_cd": 0, "think": 0, "sg_cd": 0}
+    AI_FLARE_GAP = 360          # the AI jet throws flares at most every 6 s (9 s on EASY)
+    AI_SAFEGUARD_GAP = 1200     # ...and uses SAFEGUARD at most every 20 s, only with 5+ threats close
+    # (it wiped whole MBML salvos every 10 s and lured every salvo onto flares every 4 s: the launchers could not win)
+
+    def ai_jet_brain(cx, cy):
+        """The AI jet's defensive moves, decided every few frames: flares at a missile closing in, the shield just before
+        a missile's fuse range, a repair kit when low, SAFEGUARD when crowded (NORMAL only), stealth now and then.
+        Returns True when it wants the shield up this frame."""
+        easy = modes["difficulty"] == "EASY"
+        for k in ("flare_cd", "heal_cd", "think", "sg_cd"):
+            ai_pilot[k] = max(0, ai_pilot[k] - 1)
+        near = []
+        shield = False
+        shield_range = jet_fuse_radius(cy) * (1.3 if easy else 1.7)
+        flying = duel["missiles"] if game_state == "DUEL" else [e for e in campaign_enemies if e.launch_delay == 0]
+        for e in flying:
+            if e.expired:
+                continue
+            ex, ey = e.x + e.width / 2, e.y + e.height / 2
+            d = math.hypot(ex - cx, ey - cy)
+            near.append(d)
+            if d < shield_range:
+                # it decides once per missile whether to raise the shield in time: 50% (EASY 25%); a shield that
+                # went up for every missile blocked every salvo and the launchers could never win
+                if not hasattr(e, "ai_shield"):
+                    e.ai_shield = random.random() < (0.25 if easy else 0.5)
+                shield = shield or e.ai_shield
+        closest = min(near) if near else 9999
+        if ai_pilot["think"] == 0:
+            ai_pilot["think"] = 12 if easy else 6
+            if p1_decoys > 0 and ai_pilot["flare_cd"] == 0 and closest < (120 if easy else 180):
+                ai_pilot["flare_cd"] = round(AI_FLARE_GAP * (1.5 if easy else 1.0))
+                post_key(pygame.K_f, ai=True)
+            elif p1_med_kits > 0 and ai_pilot["heal_cd"] == 0 and p1_hp < p1_max_hp * 0.5:
+                ai_pilot["heal_cd"] = 180
+                post_key(pygame.K_q, ai=True)
+            elif not easy and safeguard["cd"] == 0 and ai_pilot["sg_cd"] == 0 and \
+                    sum(1 for d in near if d < 260) + sum(1 for d in drones if math.hypot(d.x - cx, d.y - cy) < 260) >= 5:
+                ai_pilot["sg_cd"] = AI_SAFEGUARD_GAP
+                post_key(pygame.K_b, ai=True)
+            elif not easy and p1_stealth_cd == 0 and closest < 110 and random.random() < 0.3:
+                post_key(pygame.K_v, ai=True)
+        # campaign: its own ordnance now and then -- the first munition with rounds left that has a target
+        ai_pilot["ord_cd"] = max(0, ai_pilot.get("ord_cd", 0) - 1)
+        if game_state == "CAMPAIGN" and ai_pilot["ord_cd"] == 0 and p1_ammo:
+            ai_pilot["ord_cd"] = 420 if easy else 240
+            loadout = jet_loadout(current_level)
+            for i, m in enumerate(loadout):
+                has_target = ground_targets() if m["target"] == "ground" else flying
+                if p1_ammo.get(m["id"], 0) > 0 and has_target and not (m["role"] == "BUSTER" and ord_sel["buster_cd"]):
+                    ord_sel["i"], ord_sel["fire"] = i, True
+                    break
+        return shield
+
+    def mbml_lead(e, tx, ty):
+        """Your MBML missiles aim where the jet will be when they get there (they turn only 30 deg/s, so they lead)."""
+        if e.system is not YOUR_MBML or e.decoyed or e.launch_delay > 0:
+            return tx, ty
+        ex, ey = e.x + e.width / 2, e.y + e.height / 2
+        t = min(90.0, math.hypot(tx - ex, ty - ey) / max(1.0, e.speed_stat))
+        return tx + p1_vx * t, ty + p1_vy * t
 
     def touch_aim_target(cx, cy):
         """FIRE on a phone aims at the nearest flying missile, else the nearest launcher."""
@@ -2285,6 +2924,8 @@ async def main():
                 post_key(pygame.K_h)
             elif CONTINUE_BTN.inflate(0, 10).collidepoint(tx, ty) and best_level() > 1:
                 post_key(pygame.K_3)
+            elif SIDE_BTN.inflate(0, 10).collidepoint(tx, ty):
+                post_key(pygame.K_4)
             elif CARD1.collidepoint(tx, ty):
                 post_key(pygame.K_1)
             elif CARD2.collidepoint(tx, ty):
@@ -2295,10 +2936,13 @@ async def main():
         if pause["on"] or TOUCH_PAUSE.inflate(16, 20).collidepoint(tx, ty):   # PAUSE button / tap to resume
             post_key(pygame.K_RETURN)
             return
-        if game_state == "CAMPAIGN":
-            if TOUCH_MENU.inflate(16, 20).collidepoint(tx, ty):
-                post_key(pygame.K_ESCAPE)
-                return
+        if TOUCH_SWAP.inflate(16, 20).collidepoint(tx, ty):
+            post_key(pygame.K_4)               # duel: swap sides (you jet <-> you launcher)
+            return
+        if game_state == "CAMPAIGN" and TOUCH_MENU.inflate(16, 20).collidepoint(tx, ty):
+            post_key(pygame.K_ESCAPE)
+            return
+        if game_state in ("CAMPAIGN", "DUEL"):
             if ty >= LEVEL_BAR_TOP:
                 for lvl, r in level_bar_slots():
                     if r.inflate(2, 14).collidepoint(tx, ty):
@@ -2313,9 +2957,15 @@ async def main():
             if math.hypot(tx - c[0], ty - c[1]) < r * 1.3:
                 if key is None:
                     touch["shield_ids"].add(fid)
+                elif key in ("DRIVE_L", "DRIVE_R"):
+                    touch["drive"][fid] = -1.0 if key == "DRIVE_L" else 1.0
+                elif key == "LASER":
+                    touch["laser_ids"].add(fid)
                 else:
                     post_key(key)
                 return
+        if ai_jet():
+            return                             # playing the launchers: no jet stick / FIRE
         if tx < SCREEN_WIDTH / 2:
             touch["stick_id"] = fid
             touch["origin"] = (tx, ty)
@@ -2337,6 +2987,8 @@ async def main():
     def finger_up(fid):
         touch["fire_ids"].discard(fid)
         touch["shield_ids"].discard(fid)
+        touch["laser_ids"].discard(fid)
+        touch["drive"].pop(fid, None)
         if fid == touch["stick_id"]:
             touch["stick_id"] = None
             touch["vec"] = (0.0, 0.0)
@@ -2371,29 +3023,39 @@ async def main():
                 ready = flir["on"] or flir["energy"] > 10
             elif label == "SAFE":
                 ready = safeguard["cd"] == 0
+            elif label == "LASER":
+                ready = laser_bat.cooldown == 0
+            elif label == "MISSILE":
+                ready = cmd["missile_cd"] == 0 if game_state == "CAMPAIGN" else duel["missile_cd"] == 0
+            elif label == "DRONE":
+                ready = cmd["drone_cd"] == 0 if game_state == "CAMPAIGN" else duel["drone_cd"] == 0
             held = (label == "SHIELD" and bool(touch["shield_ids"])) or (label == "FLIR" and flir["on"]) or \
-                   (label == "SAFE" and safeguard["t"] > 0)
+                   (label == "SAFE" and safeguard["t"] > 0) or (label == "LASER" and laser_bat.active) or \
+                   (label == "<" and -1.0 in touch["drive"].values()) or (label == ">" and 1.0 in touch["drive"].values())
             states.append((label, c, r, ready, held))
-        key = ((int(base[0]), int(base[1])), (int(knob[0]), int(knob[1])), firing, tuple(states), game_state)
+        as_launcher = ai_jet()
+        key = ((int(base[0]), int(base[1])), (int(knob[0]), int(knob[1])), firing, tuple(states), game_state, as_launcher)
         if key != touch_cache["key"]:
             ui = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-            pygame.draw.circle(ui, (0, 229, 212, 45), base, STICK_R)
-            pygame.draw.circle(ui, (0, 229, 212, 170), base, STICK_R, 3)
-            pygame.draw.circle(ui, (0, 229, 212, 190), (int(knob[0]), int(knob[1])), 26)
-            pygame.draw.circle(ui, (255, 70, 70, 235) if firing else (225, 40, 55, 190), FIRE_C, FIRE_R)
-            pygame.draw.circle(ui, (255, 255, 255, 230), FIRE_C, FIRE_R, 4)
+            if not as_launcher:                   # the jet's thumb stick and FIRE button
+                pygame.draw.circle(ui, (0, 229, 212, 45), base, STICK_R)
+                pygame.draw.circle(ui, (0, 229, 212, 170), base, STICK_R, 3)
+                pygame.draw.circle(ui, (0, 229, 212, 190), (int(knob[0]), int(knob[1])), 26)
+                pygame.draw.circle(ui, (255, 70, 70, 235) if firing else (225, 40, 55, 190), FIRE_C, FIRE_R)
+                pygame.draw.circle(ui, (255, 255, 255, 230), FIRE_C, FIRE_R, 4)
             for label, c, r, ready, held in states:
                 col = (0, 200, 255, 235) if held else ((40, 120, 200, 200) if ready else (60, 65, 80, 160))
                 pygame.draw.circle(ui, col, c, r)
                 pygame.draw.circle(ui, (230, 240, 255, 220), c, r, 2)
-            t = touch_big.render("FIRE", True, (255, 255, 255))
-            ui.blit(t, t.get_rect(center=FIRE_C))
+            if not as_launcher:
+                t = touch_big.render("FIRE", True, (255, 255, 255))
+                ui.blit(t, t.get_rect(center=FIRE_C))
             for label, c, r, ready, held in states:
-                t = touch_font.render(label, True, (255, 255, 255))
+                t = (touch_big if label in ("<", ">", "MISSILE") else touch_font).render(label, True, (255, 255, 255))
                 ui.blit(t, t.get_rect(center=c))
-            mv = touch_font.render("FLY", True, (180, 255, 245))
-            ui.blit(mv, mv.get_rect(center=(base[0], base[1] + STICK_R + 12)))
-            buttons = [(TOUCH_PAUSE, "PAUSE")] + ([(TOUCH_MENU, "MENU")] if game_state == "CAMPAIGN" else [])
+            mv = touch_font.render("DRIVE" if as_launcher else "FLY", True, (180, 255, 245))
+            ui.blit(mv, mv.get_rect(center=(130, 560) if as_launcher else (base[0], base[1] + STICK_R + 12)))
+            buttons = [(TOUCH_PAUSE, "PAUSE"), (TOUCH_SWAP, "SWAP")] + ([(TOUCH_MENU, "MENU")] if game_state == "CAMPAIGN" else [])
             for rect, text in buttons:
                 pygame.draw.rect(ui, (30, 40, 60, 230), rect, border_radius=6)
                 pygame.draw.rect(ui, (150, 170, 210, 255), rect, 1, border_radius=6)
@@ -2499,6 +3161,8 @@ async def main():
                     post_key(pygame.K_h)
                 elif CONTINUE_BTN.collidepoint(event.pos) and best_level() > 1:
                     post_key(pygame.K_3)
+                elif SIDE_BTN.collidepoint(event.pos):
+                    post_key(pygame.K_4)
                 elif CARD1.collidepoint(event.pos):
                     post_key(pygame.K_1)
                 elif CARD2.collidepoint(event.pos):
@@ -2512,6 +3176,8 @@ async def main():
                 toggle_control("missile")
             if event.type == pygame.KEYDOWN and event.key == pygame.K_h:
                 toggle_control("difficulty")
+            if game_state == "MODE_SELECT" and event.type == pygame.KEYDOWN and event.key in (pygame.K_4, pygame.K_KP4):
+                toggle_control("side")             # duel: you fly the jet, or you drive the launcher vs the AI jet
             if game_state == "MODE_SELECT" and event.type == pygame.JOYBUTTONDOWN and event.joy == 0:
                 if event.button == 2:
                     toggle_control("jet")
@@ -2521,6 +3187,8 @@ async def main():
                     toggle_control("difficulty")
                 elif event.button == 5 and best_level() > 1:   # R1: continue from the best level
                     post_key(pygame.K_3)
+                elif event.button == 6:          # Share / Back: duel side JET / LAUNCHER
+                    toggle_control("side")
             # CONTINUE ('3' on the start screen): the campaign starts at the best level reached
             if game_state == "MODE_SELECT" and event.type == pygame.KEYDOWN and event.key in (pygame.K_3, pygame.K_KP3) \
                     and best_level() > 1:
@@ -2540,6 +3208,8 @@ async def main():
             elif event.type == pygame.JOYBUTTONDOWN and event.joy == 0 and event.button == 0 and pad_ord["down"]:
                 pad_ord["used"] = True                 # hold 7 + Cross/A = SAFEGUARD
                 post_key(pygame.K_b)
+            elif event.type == pygame.JOYBUTTONDOWN and event.joy == 0 and event.button == 2 and pad_ord["down"]:
+                pad_ord["used"] = True                 # hold 7 + Square = laser ray (held; read in the loop)
             elif event.type == pygame.JOYBUTTONUP and event.joy == 0 and event.button == PAD_ORD_BUTTON:
                 if pad_ord["down"] and not pad_ord["used"]:
                     post_key(pygame.K_r)
@@ -2588,6 +3258,7 @@ async def main():
                     p1_split_charges = round(3 * pbuff())
                     p1_power_tier = 1
                     p1_power_charge = 0.0
+                    set_biome(biome_index(current_level))
                     SFX.snd_win.play()
 
                 elif (event.type == pygame.KEYDOWN and event.key in (pygame.K_2, pygame.K_KP2)) or \
@@ -2600,7 +3271,8 @@ async def main():
                     p1_split_charges = round(2 * pbuff())
                     p1_power_tier = 1
                     p1_power_charge = 0.0
-                    p2_hp = p2_max_hp                   # the armoured duel launcher
+                    p2_max_hp = round(12 * launcher_buff())   # armoured: 12 hits, 14 when it is yours vs the AI jet
+                    p2_hp = p2_max_hp
                     duel["missiles"].clear()
                     drones.clear()
                     autogun["rounds"].clear()
@@ -2608,12 +3280,38 @@ async def main():
                     p2_decoys = 3
                     p2_power_tier = 1
                     p2_power_charge = 0.0
+                    set_biome(biome_index(current_level))   # the duel is fought at the chosen level's landscape
+                    clear_ground_scars()
                     SFX.snd_win.play()
+
+            # YOU = LAUNCHER (AI jet): your keys / controller / touch fire the launcher; the jet's action keys below
+            # only take the AI's own presses (posted with ai=True). Esc and F11 still work.
+            # In the campaign the same keys command your launchers: TAB / E (controller Square / R1) = next truck.
+            if game_state in ("CAMPAIGN", "DUEL") and ai_jet() and event.type in (pygame.KEYDOWN, pygame.JOYBUTTONDOWN) \
+                    and not getattr(event, "ai", False):
+                want_m = (event.type == pygame.KEYDOWN and event.key in (pygame.K_UP, pygame.K_w, pygame.K_SPACE, pygame.K_KP8)) or \
+                         (event.type == pygame.JOYBUTTONDOWN and event.button == 0)
+                want_d = (event.type == pygame.KEYDOWN and event.key in (pygame.K_DOWN, pygame.K_s, pygame.K_KP2, pygame.K_KP5)) or \
+                         (event.type == pygame.JOYBUTTONDOWN and event.button == 1)
+                if game_state == "DUEL" and p2_hp > 0:
+                    duel["want_missile"] |= want_m
+                    duel["want_drone"] |= want_d
+                elif game_state == "CAMPAIGN":
+                    cmd["want_missile"] |= want_m
+                    cmd["want_drone"] |= want_d
+                    if (event.type == pygame.KEYDOWN and event.key in (pygame.K_TAB, pygame.K_e)) or \
+                       (event.type == pygame.JOYBUTTONDOWN and event.button in (2, 5)):
+                        alive = [i for i, ln in enumerate(launchers) if ln["alive"]] or list(range(len(launchers)))
+                        cmd["sel"] = next((i for i in alive if i > cmd["sel"]), alive[0])   # next truck to the right
+                if not (event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_F11, pygame.K_n, pygame.K_p,
+                                                                        pygame.K_4, pygame.K_KP4)):
+                    continue
 
             # P1 Heal
             if game_state in ("CAMPAIGN", "DUEL") and p1_med_kits > 0 and p1_hp < p1_max_hp:
                 if (event.type == pygame.KEYDOWN and event.key in (pygame.K_q, pygame.K_m)) or \
-                   (event.type == pygame.JOYBUTTONDOWN and ps_pad_p1 and event.joy == 0 and event.button in (1, 2, 3)):
+                   (event.type == pygame.JOYBUTTONDOWN and ps_pad_p1 and event.joy == 0 and event.button in (1, 2, 3)
+                        and not (event.button == 2 and pad_ord["down"])):   # 7 + Square is the laser, not a heal
                     heal_amt = round((60 if game_state == "CAMPAIGN" else 35) * pbuff())
                     p1_hp = min(p1_max_hp, p1_hp + heal_amt)
                     p1_med_kits -= 1
@@ -2687,8 +3385,19 @@ async def main():
                     msg = f"{munition_label(sel)} x{p1_ammo.get(sel['id'], 0)}"
                     floating_texts.append([msg, max(10, min(SCREEN_WIDTH - 10 - len(msg) * 8, p1_x)), p1_y - 25, tuple(sel["trail"]), 35])
                 if (event.type == pygame.KEYDOWN and event.key == pygame.K_r) or \
-                   (event.type == pygame.MOUSEBUTTONDOWN and event.button == 3):
+                   (event.type == pygame.MOUSEBUTTONDOWN and event.button == 3 and not ai_jet()):
                     ord_sel["fire"] = True
+                # Y = parachute cluster bomb, U = bunker buster: select it and launch it in one press
+                if event.type == pygame.KEYDOWN and event.key in (pygame.K_y, pygame.K_u):
+                    role = "CLUSTER" if event.key == pygame.K_y else "BUSTER"
+                    loadout = jet_loadout(current_level)
+                    idx = next((i for i, m in enumerate(loadout) if m["role"] == role), None)
+                    if idx is None:
+                        need = next(s for s in SPECIAL_ORDNANCE if s["role"] == role)
+                        floating_texts.append([f"{need['name']}: UNLOCKS AT LEVEL {need['unlock_level']}",
+                                               max(10, p1_x - 60), p1_y - 25, (200, 200, 210), 40])
+                    else:
+                        ord_sel["i"], ord_sel["fire"] = idx, True
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_x and current_level >= IR_UNLOCK_LEVEL:
                     if flir["on"]:
                         flir["on"] = False
@@ -2712,11 +3421,15 @@ async def main():
 
             # Level testing cheat: Press 'N' to skip wave
             # Level strip: N = next level, P = previous level, or click a level number
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_n and game_state == "CAMPAIGN":
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_n and game_state in ("CAMPAIGN", "DUEL"):
                 jump_to_level(current_level + 1)
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_p and game_state == "CAMPAIGN":
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_p and game_state in ("CAMPAIGN", "DUEL"):
                 jump_to_level(current_level - 1)
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and game_state == "CAMPAIGN":
+            # 4 swaps sides at any time (campaign and duel): you fly the jet, or you play the launchers vs the AI jet
+            if event.type == pygame.KEYDOWN and event.key in (pygame.K_4, pygame.K_KP4) and game_state in ("CAMPAIGN", "DUEL"):
+                toggle_control("side")
+                duel_req["restart"] = True
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and game_state in ("CAMPAIGN", "DUEL"):
                 for lvl, r in level_bar_slots():
                     if r.collidepoint(event.pos):
                         jump_to_level(lvl)
@@ -2726,13 +3439,44 @@ async def main():
                 set_fullscreen(not fullscreen["on"])
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 game_state = "MODE_SELECT"         # Esc never leaves full screen (user: "start it in full screen always")
+                pilots.clear()
                 saved_data.update(load_save_data())
+
+        # DUEL RESTART (level picked on the strip, or sides swapped with 4 / SWAP): a fresh round at that level
+        if duel_req["restart"]:
+            duel_req["restart"] = False
+            if game_state == "DUEL":
+                p1_max_hp = round(120 * pbuff())
+                p1_hp = p1_max_hp
+                p1_med_kits = round(2 * pbuff())
+                p1_decoys = round(3 * pbuff())
+                p2_max_hp = round(12 * launcher_buff())
+                p2_hp = p2_max_hp
+                duel["missiles"].clear()
+                drones.clear()
+                autogun["rounds"].clear()
+                duel["missile_cd"], duel["drone_cd"], duel["vx"] = 90, 150, 0.0
+                p2_x = SCREEN_WIDTH - 150.0
+                set_biome(biome_index(current_level))
+                clear_ground_scars()
+                reset_positions()
+            elif game_state == "CAMPAIGN":       # sides swapped mid-campaign: this level again, from the start
+                campaign_enemies = spawn_campaign_wave(current_level)
+                p1_hp = p1_max_hp
+                p1_med_kits = round(6 * pbuff())
+                p1_decoys = round(6 * pbuff())
+                p1_split_charges = round(3 * pbuff())
+                drones.clear()
+                reset_positions()
+            if game_state in ("CAMPAIGN", "DUEL"):
+                who = "YOU PLAY THE LAUNCHERS vs THE AI JET" if ai_jet() else "YOU FLY THE JET"
+                floating_texts.append([f"LEVEL {current_level}: {who}", SCREEN_WIDTH // 2 - 170, 240, (255, 230, 120), 90])
 
         if game_state == "CAMPAIGN":   # unlock messages from the last wave set-up
             for k, (txt, col) in enumerate(notices):
                 floating_texts.append([txt, max(10, SCREEN_WIDTH // 2 - len(txt) * 4), 250 + k * 22, col, 150])
             notices.clear()
-            if hint["frames"] == 0:    # first-time hint for a newly unlocked feature (once ever)
+            if hint["frames"] == 0 and not ai_jet():   # first-time hint (jet keys; not when you play the launchers)
                 due = hints_due(current_level, saved_data.get("hints_seen", []))
                 if due:
                     hid = due[0][0]
@@ -2790,14 +3534,24 @@ async def main():
             pygame.draw.rect(screen, (18, 22, 38), card1, border_radius=12)
             pygame.draw.rect(screen, (255, 140, 0), card1, 2, border_radius=12)
 
-            screen.blit(big_font.render("1P CAMPAIGN", True, (255, 180, 80)), (75 + XC, 168))
+            screen.blit(big_font.render("1P CAMPAIGN" + (": LAUNCHERS" if ai_jet() else ""), True, (255, 180, 80)), (75 + XC, 168))
             lines1 = [
+                "You command launchers vs an AI jet",
+                "[YOU: +20% POWER vs THE AI JET]:",
+                ("- Tap NEXT for a truck, < > drive it" if MOBILE else "- TAB/E picks a truck, arrows drive"),
+                ("- MISSILE / DRONE buttons fire" if MOBILE else "- UP/W/SPACE missile, DOWN/S drone"),
+                "- Down the AI jet in 60 s: next level",
+                "- All trucks keep firing; no limit",
+                "- Yours: MBML, 4 missiles, 2x jet speed",
+                "",
+                ">> PRESS '1' OR CROSS (X) <<",
+            ] if ai_jet() else [
                 "Jet vs AI missiles, drones & silos",
                 "[YOU: 3X POWER, +15% vs AI]:",
                 "- 345+ HP, med-kits, 12 flares (F)",
                 "- Nation weapons every 5 levels (G/R)",
                 "- Drones + auto-gun, silos + FLIR (X)",
-                "- 'T' squad, 'L' lasers, 'V' stealth",
+                "- 'T' squad, 'Z'/'L' laser, 'V' stealth",
                 "- Levels 1-100, then endless overdrive",
                 "",
                 ">> PRESS '1' OR CROSS (X) <<",
@@ -2820,8 +3574,23 @@ async def main():
             pygame.draw.rect(screen, (0, 210, 255), card2, 2, border_radius=12)
 
             duel_vs_ai = modes["missile"] == "AUTO"     # always on phones
-            screen.blit(big_font.render("JET vs AI LAUNCHER" if duel_vs_ai else "JET vs LAUNCHER", True, (0, 220, 255)), (435 + XC, 168))
-            lines2 = [
+            if ai_jet():
+                screen.blit(big_font.render("YOU vs AI JET", True, (0, 220, 255)), (435 + XC, 168))
+                lines2 = [
+                    "You drive the launcher, AI flies",
+                    "[YOU GET +20% POWER vs THE AI]:",
+                    "- AI jet 120 HP; your launcher 14 hits",
+                    ("- Tap < > to drive the launcher" if MOBILE else "- Arrows / A D drive the launcher"),
+                    ("- MISSILE / DRONE buttons fire" if MOBILE else "- UP / W / SPACE fires a missile"),
+                    ("- Missiles home on the jet" if MOBILE else "- DOWN / S sends a drone"),
+                    "- Yours: MBML, 4 missiles, 2x jet speed",
+                    "- Shoot the jet down to win",
+                    "",
+                    ">> PRESS '2' OR CIRCLE (O) <<",
+                ]
+            else:
+                screen.blit(big_font.render("JET vs AI LAUNCHER" if duel_vs_ai else "JET vs LAUNCHER", True, (0, 220, 255)), (435 + XC, 168))
+            lines2 = lines2 if ai_jet() else [
                 "You fly the jet vs an AI launcher" if duel_vs_ai else "P1 flies the jet, P2 drives",
                 "[YOU GET +15% IN EVERYTHING]:" if duel_vs_ai else "[EQUAL BALANCED COMBAT]:",
                 "- Jet " + ("138" if duel_vs_ai else "120") + " HP; launcher: 12 hits",
@@ -2838,13 +3607,19 @@ async def main():
                 col = (100, 255, 150) if ">>" in ln else ((0, 240, 255) if "EQUAL" in ln or "+15%" in ln else (210, 220, 235))
                 screen.blit(font.render(ln, True, col), (425 + XC, y_c2))
                 y_c2 += 22
+            hov = SIDE_BTN.collidepoint(mouse_pos) and not touch["on"]   # who you play in the duel
+            pygame.draw.rect(screen, (20, 46, 60) if hov else (14, 32, 44), SIDE_BTN, border_radius=6)
+            pygame.draw.rect(screen, (0, 210, 255), SIDE_BTN, 1, border_radius=6)
+            key4 = {"touch": "", "pad": "  [SHARE]"}.get(input_kind(), "  [4]")
+            t = font.render(("YOU PLAY: LAUNCHERS (AI JET)" if ai_jet() else "YOU PLAY: THE JET") + key4, True, (120, 230, 255))
+            screen.blit(t, t.get_rect(center=SIDE_BTN.center))
 
             # three simple switches (click / tap, keys J / K / H, controller Square / Triangle / L1)
             kind = input_kind()
             keyname = {"keys": ("J", "K", "H"), "pad": ("SQUARE", "TRIANGLE", "L1"), "touch": ("", "", "")}[kind]
             for rect, label, mode, keyhint, good in (
                     (MODE_JET_BTN, "JET", modes["jet"], keyname[0], "AUTO"),
-                    (MODE_MSL_BTN, "DUEL LAUNCHER", modes["missile"], "PHONE" if MOBILE else keyname[1], "AUTO"),
+                    (MODE_MSL_BTN, "LAUNCHER", launcher_who(), keyname[1], "YOU"),
                     (MODE_DIFF_BTN, "AI", modes["difficulty"], keyname[2], "EASY")):
                 on = mode == good
                 hover = rect.collidepoint(mouse_pos) and not touch["on"]
@@ -2855,9 +3630,11 @@ async def main():
                 screen.blit(t, t.get_rect(center=rect.center))
             # what the switches mean right now, in plain words
             meaning = "  |  ".join((
+                "AI flies the jet" if ai_jet() else
                 ("autopilot flies, you fire" if MOBILE else "autopilot + auto-aim help you") if modes["jet"] == "AUTO"
                 else "you fly & shoot yourself",
-                "AI drives the launcher" if modes["missile"] == "AUTO" else "a friend drives the launcher",
+                "you play the launchers vs the AI jet" if ai_jet() else
+                ("AI drives the launcher" if modes["missile"] == "AUTO" else "a friend drives the launcher"),
                 "slower, simpler AI" if modes["difficulty"] == "EASY" else "full-strength AI"))
             t = font.render(meaning, True, (200, 210, 230))
             screen.blit(t, t.get_rect(center=(SCREEN_WIDTH // 2, 516)))
@@ -2899,6 +3676,7 @@ async def main():
                 if crash["y"] >= GROUND_Y - 22:
                     crash["y"] = GROUND_Y - 22
                     crash["phase"] = "boom"
+                    add_crater(crash["x"], 2.0)
                     SFX.snd_explode.play()
             for fp in crash["fire"][:]:
                 fp[0] += fp[2]
@@ -2911,7 +3689,7 @@ async def main():
                 pygame.draw.circle(screen, col, (int(fp[0]), int(fp[1])), max(2, (40 - fp[4]) // 4))
             if crash["phase"] == "fall":
                 wf = jet_size_factor(crash["y"])
-                wreck = pygame.transform.scale(create_jet_sprite(False, (255, 90, 0)), (int(144 * wf), int(120 * wf)))
+                wreck = pygame.transform.scale(create_jet_sprite(False, (255, 90, 0), paint=jet_paint(current_level)), (int(144 * wf), int(120 * wf)))
                 wreck = pygame.transform.rotate(wreck, crash["rot"])
                 screen.blit(wreck, wreck.get_rect(center=(crash["x"], crash["y"])))
             else:
@@ -2927,6 +3705,7 @@ async def main():
                     pygame.draw.circle(screen, (255, 120, 20), (int(cx + math.cos(a) * r * 1.1), int(cy - r // 3 + math.sin(a) * r * 0.6)), 5)
                 if b >= 55:
                     handle_round_conclusion("P2", crash["origin"])
+            draw_pilots()
             pygame.display.flip()
             clock.tick(60)
             await asyncio.sleep(0)
@@ -2938,8 +3717,11 @@ async def main():
         if game_state == "NORMAL_ROUND_BREAK":
             break_timer -= 1
 
-            if break_winner == "P1":
-                r_msg = f"ROUND WON BY {names[0]} (JET)!"
+            if prev_mode == "CAMPAIGN" and ai_jet():
+                r_msg = (f"{names[0]} DOWNED THE AI JET! NEXT LEVEL" if break_winner == "P2"
+                         else "THE AI JET CLEARED THE WAVE - TRY AGAIN")
+            elif break_winner == "P1":
+                r_msg = f"ROUND WON BY {jet_display_name()} (JET)!"
             elif prev_mode == "DUEL":
                 r_msg = f"ROUND WON BY {p2_display_name()} (LAUNCHER)!"
             else:
@@ -2963,7 +3745,7 @@ async def main():
                         p2_decoys = 3
                 if prev_mode == "CAMPAIGN":
                     game_state = "CAMPAIGN"
-                    if break_winner == "P1":
+                    if (break_winner == "P1") != ai_jet():   # the side YOU play won: next level
                         current_level += 1
                     p1_hp = min(p1_max_hp, p1_hp + 40)
                     campaign_enemies = spawn_campaign_wave(current_level)
@@ -2978,12 +3760,14 @@ async def main():
                     p1_hp = p1_max_hp
                     p2_hp = p2_max_hp
                     duel["missiles"].clear()          # a fresh round: the sky is empty, the launcher reloads
+                    clear_ground_scars()
                     drones.clear()
                     autogun["rounds"].clear()
                     duel["missile_cd"], duel["drone_cd"], duel["vx"] = 90, 150, 0.0
 
                 reset_positions()
 
+            draw_pilots()
             pygame.display.flip()
             clock.tick(60)
             await asyncio.sleep(0)
@@ -2991,6 +3775,17 @@ async def main():
 
         # ground missile launchers
         if game_state == "CAMPAIGN":
+            cmd["drive"] = 0.0
+            if ai_jet():                    # YOU = LAUNCHERS: arrows / A D / 1st pad stick / touch < > drive your truck
+                kp = pygame.key.get_pressed()
+                ax = ps_pad_p1.get_axis(0) if ps_pad_p1 and abs(ps_pad_p1.get_axis(0)) > 0.3 else 0.0
+                drv = (1.0 if (kp[pygame.K_RIGHT] or kp[pygame.K_d] or ax > 0) else 0.0) - \
+                      (1.0 if (kp[pygame.K_LEFT] or kp[pygame.K_a] or ax < 0) else 0.0)
+                cmd["drive"] = max(-1.0, min(1.0, drv + sum(touch["drive"].values())))
+                if not launchers[cmd["sel"] % len(launchers)]["alive"] and any(ln["alive"] for ln in launchers):
+                    cmd["sel"] = min((i for i, ln in enumerate(launchers) if ln["alive"]),
+                                     key=lambda i: abs(i - cmd["sel"]))   # yours was hit: take the nearest one left
+                cmd["sel"] %= len(launchers)
             move_launchers(current_level % 10 == 0, campaign_enemies)
             draw_launchers(current_level % 10 == 0)
             draw_silos()
@@ -2998,6 +3793,21 @@ async def main():
 
         keys = pygame.key.get_pressed()
         mouse_buttons = pygame.mouse.get_pressed()
+
+        # +15% POWER for the human side (user, 2026-10-03: "build power is 15% more than AI"): when you play the
+        # launchers, every missile and drone of yours is boosted once -- missile speed and fuse reach +15%, drone hits
+        # +15% (the 30 deg/s turn limit and the drones' speed rule are unchanged). Reload, driving, stock and the duel
+        # launcher's armour get +15% where they are set (launcher_buff).
+        if ai_jet() and game_state in ("CAMPAIGN", "DUEL"):
+            for e in (campaign_enemies if game_state == "CAMPAIGN" else duel["missiles"]):
+                if not getattr(e, "side_buffed", False):
+                    e.side_buffed = True
+                    e.speed_stat *= launcher_buff()
+                    e.fuse_factor *= launcher_buff()
+            for d in drones:
+                if not getattr(d, "side_buffed", False):
+                    d.side_buffed = True
+                    d.dmg = round(d.dmg * launcher_buff())
 
         center_p1_x = p1_x + 50
         center_p1_y = p1_y + 40
@@ -3038,6 +3848,8 @@ async def main():
         if p1_hp > 0:
             speed_mult = 1.35 if active_mutator == "HYPER SPEED STORM" else 1.0
             actual_p1_speed = p1_speed * speed_mult * (jet_pace(current_level) if game_state == "CAMPAIGN" else 1.0) * pbuff()
+            if ai_jet():                          # you play the launchers: the AI jet flies at half speed
+                actual_p1_speed *= AI_JET_SPEED_FACTOR
 
             pad_x = ps_pad_p1.get_axis(0) if ps_pad_p1 and abs(ps_pad_p1.get_axis(0)) > 0.15 else 0.0
             pad_y = ps_pad_p1.get_axis(1) if ps_pad_p1 and abs(ps_pad_p1.get_axis(1)) > 0.15 else 0.0
@@ -3046,6 +3858,9 @@ async def main():
             in_y = (1 if (keys[pygame.K_s] or pad_y > 0.3) else 0) - (1 if (keys[pygame.K_w] or pad_y < -0.3) else 0)
             if touch["stick_id"] is not None and math.hypot(*touch["vec"]) > 0.2:
                 in_x, in_y = touch["vec"]          # thumb stick: fly where the thumb points
+            ai_flying = game_state in ("CAMPAIGN", "DUEL") and ai_jet()   # the computer flies the jet; you play the ground
+            if ai_flying:
+                in_x = in_y = 0
             old_head = math.atan2(p1_vy, p1_vx)
             if sky_esc["ret"]:
                 pass   # coming back down from a sky escape: the return manoeuvre below has the controls
@@ -3058,7 +3873,7 @@ async def main():
                 p1_vx, p1_vy = math.cos(head) * spd, math.sin(head) * spd
                 autopilot["head"] = head
                 autopilot["mode"], autopilot["t"], autopilot["roll"] = "cruise", 60, 0.0
-            elif modes["jet"] == "MANUAL":
+            elif modes["jet"] == "MANUAL" and not ai_flying:
                 pass   # JET MANUAL: no autopilot; hands off, the jet holds its course and speed
             else:
                 # hands off: the autopilot keeps the jet flying and manoeuvring
@@ -3069,7 +3884,12 @@ async def main():
                 else:
                     threats = [(e.x + e.width / 2, e.y + e.height / 2, math.cos(e.heading) * e.speed_stat,
                                 math.sin(e.heading) * e.speed_stat) for e in duel["missiles"]]
-                want_vx, want_vy = autopilot_velocity(p1_x + 50, p1_y + 40, actual_p1_speed, threats)
+                attack = None
+                if ai_flying and game_state == "DUEL" and p2_hp > 0:
+                    attack = (p2_x, GROUND_Y - 14)
+                elif ai_flying and game_state == "CAMPAIGN" and ground_targets():   # the nearest launcher / silo
+                    attack = min(ground_targets(), key=lambda g: abs(g[0] - (p1_x + 50)))
+                want_vx, want_vy = autopilot_velocity(p1_x + 50, p1_y + 40, actual_p1_speed, threats, attack)
                 p1_vx += (want_vx - p1_vx) * 0.35
                 p1_vy += (want_vy - p1_vy) * 0.35
             # SKY ESCAPE: above the top of the screen the jet is out of sight; after SKY_RETURN frames up there it
@@ -3110,7 +3930,9 @@ async def main():
                 p1_hp = 0
 
             pad_guard = ps_pad_p1 and (ps_pad_p1.get_button(4) or ps_pad_p1.get_button(9) or ps_pad_p1.get_axis(4) > 0.3)
-            if (keys[pygame.K_e] or pad_guard or touch["shield_ids"]) and p1_guard_energy > 5.0:
+            want_guard = ai_jet_brain(center_p1_x, center_p1_y) if ai_flying else \
+                bool(keys[pygame.K_e] or pad_guard or touch["shield_ids"])
+            if want_guard and p1_guard_energy > 5.0:
                 p1_guard = True
                 p1_guard_energy -= 0.6 / pbuff()
             else:
@@ -3121,7 +3943,9 @@ async def main():
             pad_aim_x = ps_pad_p1.get_axis(2) if ps_pad_p1 and abs(ps_pad_p1.get_axis(2)) > 0.2 else 0.0
             pad_aim_y = ps_pad_p1.get_axis(3) if ps_pad_p1 and abs(ps_pad_p1.get_axis(3)) > 0.2 else 0.0
 
-            if math.hypot(pad_aim_x, pad_aim_y) > 0.3:
+            if ai_flying:
+                p1_aim_angle = math.atan2(p1_vy, p1_vx)    # (the auto-fire below aims at its target)
+            elif math.hypot(pad_aim_x, pad_aim_y) > 0.3:
                 p1_aim_angle = math.atan2(pad_aim_y, pad_aim_x)
             elif touch["on"]:
                 # phone: no mouse, so FIRE aims itself (nearest missile, else a launcher, else straight ahead)
@@ -3140,13 +3964,15 @@ async def main():
 
             pad_shoot = ps_pad_p1 and (ps_pad_p1.get_button(0) or ps_pad_p1.get_button(5) or (ps_pad_p1.get_numaxes() > 5 and ps_pad_p1.get_axis(5) > 0.3))
             current_wpn = WEAPON_TIERS[p1_power_tier]
-            on_level_bar = game_state == "CAMPAIGN" and mouse_pos[1] >= LEVEL_BAR_TOP   # clicking the strip doesn't shoot
+            on_level_bar = game_state in ("CAMPAIGN", "DUEL") and mouse_pos[1] >= LEVEL_BAR_TOP   # clicking the strip doesn't shoot
             mouse_fire = mouse_buttons[0] and not on_level_bar and not touch["on"]   # a finger is not a mouse
-            is_firing = (mouse_fire or touch["fire_ids"] or keys[pygame.K_SPACE] or pad_shoot) and not p1_guard
+            is_firing = (mouse_fire or touch["fire_ids"] or keys[pygame.K_SPACE] or pad_shoot) and not p1_guard and not ai_flying
             # JET AUTO: while you aren't firing yourself, the guns aim at the nearest target in front of the nose
             # (missile, else launcher; P2's missile in the duel) and fire by themselves
             # (never on phones -- user, 2026-10-03: "in mobile mode it automatically firing": there FIRE is the only trigger)
-            if modes["jet"] == "AUTO" and not is_firing and not p1_guard and not MOBILE and not touch["on"]:
+            ai_trigger = ai_flying and not (modes["difficulty"] == "EASY" and random.random() < 0.4)
+            if (ai_trigger or (modes["jet"] == "AUTO" and not ai_flying and not MOBILE and not touch["on"])) \
+                    and not is_firing and not p1_guard:
                 tgt = touch_aim_target(center_p1_x, center_p1_y)
                 if tgt:
                     a = math.atan2(tgt[1] - center_p1_y, tgt[0] - center_p1_x)
@@ -3157,6 +3983,8 @@ async def main():
             # jet ordnance (1P): launched from the nose along the flight path
             if ord_sel["cd"] > 0:
                 ord_sel["cd"] -= 1
+            if ord_sel["buster_cd"] > 0:
+                ord_sel["buster_cd"] -= 1
             if ord_sel["fire"]:
                 ord_sel["fire"] = False
                 if game_state == "CAMPAIGN":
@@ -3169,7 +3997,15 @@ async def main():
                 jet_squad_origins.append((center_p1_x - w_off + nose_dx, center_p1_y - w_off + nose_dy))
                 jet_squad_origins.append((center_p1_x - w_off + nose_dx, center_p1_y + w_off + nose_dy))
 
-            if current_wpn["type"] == "laser" and is_firing:
+            # LASER RAY: Z / touch LASER / controller hold 7 + Square, or the fire button with a laser tier (L).
+            # One battery: 5 s of beam at most, then 10 s cooldown (meanwhile the fire button shoots the gun).
+            pad_laser = bool(ps_pad_p1 and pad_ord["down"] and ps_pad_p1.get_button(2))
+            laser_key = (keys[pygame.K_z] or bool(touch["laser_ids"]) or pad_laser) and not ai_flying
+            beam_on = laser_bat.update((laser_key or (current_wpn["type"] == "laser" and is_firing)) and not p1_guard)
+            p1_laser_wpn = current_wpn if current_wpn["type"] == "laser" else WEAPON_TIERS[3]
+            gun_wpn = current_wpn if current_wpn["type"] == "bullet" else WEAPON_TIERS[2]
+            if beam_on:
+                current_wpn = p1_laser_wpn
                 p1_laser_active = True
                 p1_laser_x, p1_laser_y = nose_x, nose_y
                 p1_laser_end_x = nose_x + math.cos(p1_aim_angle) * 900
@@ -3235,7 +4071,8 @@ async def main():
                     SFX.snd_win.play()
                     floating_texts.append([f"LASER UPGRADED: {WEAPON_TIERS[p1_power_tier]['name']}!", SCREEN_WIDTH // 2 - 140, 200, WEAPON_TIERS[p1_power_tier]["color_outer"], 45])
 
-            elif current_wpn["type"] == "bullet":
+            if not (beam_on and WEAPON_TIERS[p1_power_tier]["type"] == "laser"):   # the guns (also while the laser cools)
+                current_wpn = gun_wpn
                 p1_dmg = int(current_wpn["dmg"] * ((3 * level_power(current_level)) if game_state == "CAMPAIGN" else 1) * pbuff())
                 if p1_shoot_cd > 0:
                     p1_shoot_cd -= 1
@@ -3278,6 +4115,7 @@ async def main():
                     ex, ey = e.x + e.width / 2, e.y + e.height / 2
                     fl = min(flares, key=lambda d: math.hypot(d["x"] - ex, d["y"] - ey))
                     tx, ty = fl["x"], fl["y"]
+                tx, ty = mbml_lead(e, tx, ty)
                 e.update([], tx, ty, SCREEN_WIDTH, SCREEN_HEIGHT, threats=p1_bullets)
 
             # a missile that leaves the sky (overshot past an edge) or hits the ground (dived into it,
@@ -3414,7 +4252,7 @@ async def main():
             for s in silos:
                 if s.update(hold=hold_silos):
                     e = MissileEnemy(current_level, mutator=active_mutator if current_level > 100 else "NONE",
-                                     launch_x=s.x, ground_y=GROUND_Y, system=s.system, difficulty=modes["difficulty"])
+                                     launch_x=s.x, ground_y=GROUND_Y, system=s.system, difficulty=ground_difficulty())
                     e.silo = s
                     e.y = GROUND_Y - e.height / 2 - 2   # rises out of the hatch, not out of thin air above it
                     campaign_enemies.append(e)
@@ -3451,15 +4289,55 @@ async def main():
                 want_drone, want_missile = dl.update(hold=p1_stealth_timer > 0,
                                                      hold_missile=len(campaign_enemies) >= MAX_WAVE_MISSILES)
                 if want_drone:
-                    dfx = difficulty_factors(modes["difficulty"])
+                    dfx = difficulty_factors(ground_difficulty())
                     drones.append(Drone(dl.x, GROUND_Y - 26, drone_speed(top_speed) * dfx["drone_speed"], current_level,
                                         dmg_factor=dfx["drone_dmg"]))
                     SFX.snd_drone.play()
                 if want_missile:
                     e = MissileEnemy(current_level, mutator=active_mutator if current_level > 100 else "NONE",
-                                     launch_x=dl.x, ground_y=GROUND_Y, difficulty=modes["difficulty"])
+                                     launch_x=dl.x, ground_y=GROUND_Y, difficulty=ground_difficulty())
                     e.silo = dl          # if it falls to the ground, this launcher gets the shot back
                     campaign_enemies.append(e)
+
+            # YOU = LAUNCHERS (user, 2026-10-03: "launcher is not firing"): your truck fires whenever it is reloaded
+            # (no stock limit), every other truck keeps reloading and firing by itself, and the AI jet has to survive
+            # the wave timer (LAUNCHER_WAVE_FRAMES) -- down it before the timer runs out to reach the next level.
+            if ai_jet():
+                cmd["missile_cd"] = max(0, cmd["missile_cd"] - 1)
+                cmd["drone_cd"] = max(0, cmd["drone_cd"] - 1)
+                ln = launchers[cmd["sel"]]
+                flying_now = sum(1 for e in campaign_enemies if e.launch_delay == 0)
+                if cmd["want_missile"]:
+                    if not ln["alive"]:
+                        floating_texts.append(["TRUCK WRECKED - TAB / E = ANOTHER TRUCK", ln["x"] - 150, GROUND_Y - 110, (255, 120, 90), 40])
+                    elif cmd["missile_cd"] > 0:
+                        floating_texts.append([f"RELOADING {cmd['missile_cd'] / 60:.1f}s", ln["x"] - 50, GROUND_Y - 110, (255, 220, 120), 25])
+                    elif flying_now >= COMMAND_SKY_CAP:
+                        floating_texts.append(["SKY FULL - WAIT", ln["x"] - 50, GROUND_Y - 110, (255, 220, 120), 25])
+                    else:
+                        cmd["missile_cd"] = round(MBML_RELOAD / launcher_buff())
+                        campaign_enemies.extend(mbml_salvo(ln["x"], cmd["sel"]))
+                        SFX.snd_ignite.play()
+                if cmd["want_drone"]:
+                    src = [dl.x for dl in drone_launchers if dl.alive] or ([ln["x"]] if ln["alive"] else [])
+                    if cmd["drone_cd"] > 0:
+                        floating_texts.append([f"DRONE RELOADING {cmd['drone_cd'] / 60:.1f}s", ln["x"] - 70, GROUND_Y - 92, (255, 220, 120), 25])
+                    elif src and len(drones) < COMMAND_SKY_CAP:
+                        x = min(src, key=lambda x: abs(x - ln["x"]))
+                        cmd["drone_cd"] = round(COMMAND_DRONE_RELOAD / launcher_buff())
+                        drones.append(Drone(x, GROUND_Y - 26, drone_speed(top_speed), current_level))
+                        SFX.snd_drone.play()
+                # the other trucks: each reloads and fires again by itself
+                for li, other in enumerate(launchers):
+                    if li == cmd["sel"] or not other["alive"]:
+                        continue
+                    other["auto_cd"] = other.get("auto_cd", random.randint(120, 300)) - 1
+                    if other["auto_cd"] <= 0 and flying_now < COMMAND_SKY_CAP and p1_stealth_timer == 0:
+                        other["auto_cd"] = round(random.randint(300, 480) / launcher_buff())
+                        campaign_enemies.extend(launch_salvo(current_level, li, 20, room=2))
+                        flying_now += 1
+                cmd["timer"] = max(0, cmd["timer"] - 1)
+            cmd["want_missile"] = cmd["want_drone"] = False
 
             p1_hp = update_drones_and_autogun(center_p1_x, center_p1_y, p1_target_x, p1_target_y, p1_hp)
 
@@ -3467,6 +4345,9 @@ async def main():
             # wave's last one (checking "wave cleared" first used to count that as a win)
             if p1_hp <= 0:
                 start_jet_crash("CAMPAIGN")
+            elif ai_jet():
+                if cmd["timer"] == 0:                # the AI jet survived the wave: play the level again
+                    handle_round_conclusion("P1", "CAMPAIGN")
             elif len(campaign_enemies) == 0 and not pending and not any(s.pending for s in silos) \
                     and not drones and not any(dl.pending for dl in drone_launchers):
                 handle_round_conclusion("P1", "CAMPAIGN")
@@ -3475,9 +4356,11 @@ async def main():
         # 2-PLAYER DUEL: JET vs LAUNCHER
         # ======================================================================
         elif game_state == "DUEL":
-            dfx_duel = difficulty_factors(modes["difficulty"])
-            ai_launcher = modes["missile"] == "AUTO"
-            reload_mult = 1.6 if modes["difficulty"] == "EASY" and ai_launcher else 1.0
+            dfx_duel = difficulty_factors(ground_difficulty())
+            you_launcher = ai_jet()                      # you drive the launcher, the computer flies the jet
+            duel_cap = 2 * MBML_SALVO if you_launcher else DUEL_MAX_MISSILES   # your MBML: two salvos in the air
+            ai_launcher = modes["missile"] == "AUTO" and not you_launcher
+            reload_mult = (1.6 if modes["difficulty"] == "EASY" and ai_launcher else 1.0) / launcher_buff()
             if duel["missile_cd"] > 0:
                 duel["missile_cd"] -= 1
             if duel["drone_cd"] > 0:
@@ -3499,7 +4382,15 @@ async def main():
                 # under the jet's nose and dodges incoming shots, never leaving the ground
                 p2_pad_x = ps_pad_p2.get_axis(0) if ps_pad_p2 and abs(ps_pad_p2.get_axis(0)) > 0.3 else 0.0
                 drive = 0.0
-                if not ai_launcher:
+                if you_launcher:                           # arrows / A D, the first controller's stick, touch < >
+                    p1_pad_x = ps_pad_p1.get_axis(0) if ps_pad_p1 and abs(ps_pad_p1.get_axis(0)) > 0.3 else 0.0
+                    if keys[pygame.K_LEFT] or keys[pygame.K_a] or keys[pygame.K_KP4] or p1_pad_x < 0 or p2_pad_x < 0:
+                        drive -= 1.0
+                    if keys[pygame.K_RIGHT] or keys[pygame.K_d] or keys[pygame.K_KP6] or p1_pad_x > 0 or p2_pad_x > 0:
+                        drive += 1.0
+                    drive = max(-1.0, min(1.0, drive + sum(touch["drive"].values())))
+                    drive *= launcher_buff()
+                elif not ai_launcher:
                     if keys[pygame.K_LEFT] or keys[pygame.K_KP4] or p2_pad_x < 0:
                         drive -= 1.0
                     if keys[pygame.K_RIGHT] or keys[pygame.K_KP6] or p2_pad_x > 0:
@@ -3538,13 +4429,22 @@ async def main():
                 p2_x = max(duel_lo, min(duel_hi, p2_x + duel["vx"]))
 
                 # FIRE: missiles and drones only ever leave the launcher (user, 2026-10-03)
-                if duel["want_missile"] and duel["missile_cd"] == 0 and len(duel["missiles"]) < DUEL_MAX_MISSILES:
-                    e = MissileEnemy(DUEL_LEVEL, launch_x=p2_x, ground_y=GROUND_Y, difficulty=modes["difficulty"])
-                    duel["missiles"].append(e)
-                    duel["missile_cd"] = int(DUEL_MISSILE_RELOAD * reload_mult)
+                if duel["want_missile"] and you_launcher and (duel["missile_cd"] > 0 or
+                                                              len(duel["missiles"]) >= duel_cap):
+                    floating_texts.append([f"RELOADING {duel['missile_cd'] / 60:.1f}s" if duel["missile_cd"] else "SKY FULL - WAIT",
+                                           p2_x - 50, GROUND_Y - 110, (255, 220, 120), 25])
+                if duel["want_missile"] and duel["missile_cd"] == 0 and \
+                        len(duel["missiles"]) < duel_cap:
+                    if you_launcher:                       # your multi-barrel launcher: a rippled salvo
+                        duel["missiles"].extend(mbml_salvo(p2_x))
+                        duel["missile_cd"] = round(MBML_RELOAD / launcher_buff())
+                    else:
+                        e = MissileEnemy(current_level, launch_x=p2_x, ground_y=GROUND_Y, difficulty=ground_difficulty())
+                        duel["missiles"].append(e)
+                        duel["missile_cd"] = int(DUEL_MISSILE_RELOAD * reload_mult)
                     SFX.snd_ignite.play()
                 if duel["want_drone"] and duel["drone_cd"] == 0 and len(drones) < DUEL_MAX_DRONES:
-                    drones.append(Drone(p2_x, GROUND_Y - 26, drone_speed(p1_speed) * dfx_duel["drone_speed"], DUEL_LEVEL,
+                    drones.append(Drone(p2_x, GROUND_Y - 26, drone_speed(p1_speed) * dfx_duel["drone_speed"], current_level,
                                         dmg_factor=dfx_duel["drone_dmg"]))
                     duel["drone_cd"] = int(DUEL_DRONE_RELOAD * reload_mult)
                     SFX.snd_drone.play()
@@ -3559,6 +4459,7 @@ async def main():
                     ex, ey = e.x + e.width / 2, e.y + e.height / 2
                     fl = min(duel_flares, key=lambda d: math.hypot(d["x"] - ex, d["y"] - ey))
                     tx, ty = fl["x"], fl["y"]
+                tx, ty = mbml_lead(e, tx, ty)
                 e.update([], tx, ty, SCREEN_WIDTH, SCREEN_HEIGHT)
                 mx, my = e.x + e.width / 2, e.y + e.height / 2
                 if e.age >= 35 and (my >= GROUND_Y - 12 or mx < -MISSILE_OFFSCREEN or mx > SCREEN_WIDTH + MISSILE_OFFSCREEN or my < -400):
@@ -3660,7 +4561,7 @@ async def main():
 
         # Draw Cyber Laser Beams
         if p1_laser_active:
-            wpn = WEAPON_TIERS[p1_power_tier]
+            wpn = p1_laser_wpn
             pygame.draw.line(screen, wpn["color_outer"], (p1_laser_x, p1_laser_y), (p1_laser_end_x, p1_laser_end_y), wpn["beam_w"] + 8)
             pygame.draw.line(screen, wpn["color_core"], (p1_laser_x, p1_laser_y), (p1_laser_end_x, p1_laser_end_y), wpn["beam_w"])
             pygame.draw.circle(screen, wpn["color_core"], (int(p1_laser_x), int(p1_laser_y)), wpn["beam_w"] + 4)
@@ -3725,14 +4626,15 @@ async def main():
             sq = pygame.transform.scale(surf, (int(144 * jet_f), max(6, int(120 * jet_f * wing_scale))))
             return pygame.transform.rotate(sq, -math.degrees(jet_heading))
 
-        s_surf = create_jet_sprite(p1_guard, WEAPON_TIERS[p1_power_tier]["color_outer"], alpha=camo_alpha)
+        s_surf = create_jet_sprite(p1_guard, WEAPON_TIERS[p1_power_tier]["color_outer"], alpha=camo_alpha,
+                                   paint=jet_paint(current_level))   # every level its own colour
         if p1_hp > 0:
             j_img = flying_jet(s_surf)
             screen.blit(j_img, j_img.get_rect(center=(center_p1_x, center_p1_y)))
 
             # Draw the 2 orbiting Combat Clones if Split Active
             if p1_split_timer > 0:
-                c1_img = flying_jet(create_jet_sprite(False, (255, 215, 60), alpha=min(210, camo_alpha)))
+                c1_img = flying_jet(create_jet_sprite(False, (255, 215, 60), alpha=min(210, camo_alpha), paint=jet_paint(current_level)))
                 screen.blit(c1_img, c1_img.get_rect(center=(center_p1_x - wing_off, center_p1_y - wing_off)))
                 screen.blit(c1_img, c1_img.get_rect(center=(center_p1_x - wing_off, center_p1_y + wing_off)))
                 pygame.draw.line(screen, (255, 215, 60), (center_p1_x, center_p1_y), (center_p1_x - wing_off, center_p1_y - wing_off), 1)
@@ -3777,14 +4679,20 @@ async def main():
                 cab_x = lx + 14 if duel["vx"] >= 0 else lx - 30
                 pygame.draw.rect(screen, body, (lx - 30, GROUND_Y - 16, 60, 14), border_radius=3)
                 pygame.draw.rect(screen, (90, 100, 75), (cab_x, GROUND_Y - 26, 16, 12), border_radius=2)
-                pygame.draw.line(screen, (120, 125, 110), (lx - 8, GROUND_Y - 16), (lx - 8, GROUND_Y - 58), 4)
+                if ai_jet():                                  # your multi-barrel rack
+                    pygame.draw.rect(screen, (105, 112, 95), (lx - 20, GROUND_Y - 34, 26, 18), border_radius=2)
+                    for k in range(4):
+                        pygame.draw.circle(screen, (35, 38, 32), (lx - 15 + k * 6, GROUND_Y - 25), 2)
+                else:
+                    pygame.draw.line(screen, (120, 125, 110), (lx - 8, GROUND_Y - 16), (lx - 8, GROUND_Y - 58), 4)
                 pygame.draw.polygon(screen, (100, 106, 90), [(lx + 2, GROUND_Y - 16), (lx + 22, GROUND_Y - 30),
                                                              (lx + 25, GROUND_Y - 26), (lx + 8, GROUND_Y - 16)])
                 for wx in (lx - 20, lx, lx + 20):
                     pygame.draw.circle(screen, (25, 25, 28), (wx, GROUND_Y - 1), 6)
                 pygame.draw.rect(screen, (60, 20, 20), (lx - 25, GROUND_Y - 70, 50, 5))            # armour bar
                 pygame.draw.rect(screen, (90, 230, 90), (lx - 25, GROUND_Y - 70, int(50 * p2_hp / p2_max_hp), 5))
-                tag = tag_font.render("AI LAUNCHER" if modes["missile"] == "AUTO" else "P2 LAUNCHER", True, (0, 210, 255))
+                tag = tag_font.render("YOUR THUNDER MBML-M" if ai_jet() else ("AI LAUNCHER" if modes["missile"] == "AUTO" else "P2 LAUNCHER"),
+                                      True, (0, 210, 255))
                 screen.blit(tag, tag.get_rect(center=(lx, GROUND_Y + 14)))
 
         # SAFEGUARD: a pulsing protective dome around the jet and the interceptor trails to what it shot down
@@ -3799,6 +4707,7 @@ async def main():
             else:
                 pygame.draw.line(screen, (200, 240, 255), (z[0], z[1]), (z[2], z[3]), 2)
 
+        draw_pilots()   # an ejected pilot still floating down while the new jet flies
         draw_blasts()   # missile self-destruct fireballs, on top of the jet and missiles
 
         if active_mutator == "BLACKOUT FOG" and game_state == "CAMPAIGN":
@@ -3808,7 +4717,7 @@ async def main():
                 pygame.draw.circle(dark_overlay, (0, 0, 0, 0), (int(e.x + e.width // 2), int(e.y + e.height // 2)), 60)
             screen.blit(dark_overlay, (0, 0))
 
-        if not ps_pad_p1:
+        if not ps_pad_p1 and not (game_state == "DUEL" and ai_jet()):
             pygame.draw.circle(screen, WEAPON_TIERS[p1_power_tier]["color_outer"], mouse_pos, 8, 2)
             pygame.draw.circle(screen, (255, 255, 255), mouse_pos, 2)
 
@@ -3816,8 +4725,10 @@ async def main():
         # DIGITAL NUMERIC HUD
         # ======================================================================
         p1_col = (255, 140, 0) if p1_hp > 50 else (255, 60, 60)
-        p1_title = (f"{names[0]}: JET [{modes['jet']}] (3X, +15% vs AI)" if game_state == "CAMPAIGN"
-                    else f"{names[0]}: JET [{modes['jet']}]" + (" (+15% vs AI)" if pbuff() > 1 else ""))
+        p1_title = (f"AI JET [{modes['difficulty']}]" if ai_jet()
+                    else f"{names[0]}: JET [{modes['jet']}] (3X, +15% vs AI)" if game_state == "CAMPAIGN"
+                    else (
+                          f"{names[0]}: JET [{modes['jet']}]" + (" (+15% vs AI)" if pbuff() > 1 else "")))
         screen.blit(font.render(p1_title, True, (255, 180, 80)), (20, 12))
         screen.blit(num_font.render(f"HP: {int(p1_hp)} / {p1_max_hp}", True, p1_col), (20, 30))
         wpn_desc = f"PWR TIER {p1_power_tier}: {WEAPON_TIERS[p1_power_tier]['name']} (Press 'L')"
@@ -3848,12 +4759,21 @@ async def main():
         else:
             sg_stat, sg_col = "SAFEGUARD [B]: READY", (120, 220, 255)
         screen.blit(font.render(sg_stat, True, sg_col), (20, 196 if game_state == "CAMPAIGN" else 136))
+        if laser_bat.cooldown > 0:
+            lz_stat, lz_col = f"LASER RAY [Z]: COOLDOWN {laser_bat.cooldown // 60 + 1}s", (120, 130, 150)
+        elif laser_bat.active:
+            lz_stat, lz_col = f"LASER RAY [Z]: FIRING {laser_bat.charge / 60:.1f}s LEFT", (255, 120, 255)
+        else:
+            lz_stat, lz_col = f"LASER RAY [Z]: READY {laser_bat.charge / 60:.1f}s", (220, 50, 255)
+        screen.blit(font.render(lz_stat, True, lz_col), (20, 216 if game_state == "CAMPAIGN" else 156))
 
         if game_state == "CAMPAIGN":
             sel = selected_munition()
             if sel:
                 left = p1_ammo.get(sel["id"], 0)
                 o_txt = f"ORDNANCE [G/R]: {munition_label(sel)} ({sel['role']}) x{left}  [{ord_sel['i'] % len(p1_ammo) + 1}/{len(p1_ammo)}]"
+                if sel["role"] == "BUSTER" and ord_sel["buster_cd"] > 0:
+                    o_txt += f"  READY IN {ord_sel['buster_cd'] // 60 + 1}s"
                 screen.blit(font.render(o_txt, True, tuple(sel["trail"]) if left else (120, 130, 150)), (20, 136))
             else:
                 screen.blit(font.render("ORDNANCE: NATION WEAPONS FROM LEVEL 5", True, (120, 130, 150)), (20, 136))
@@ -3887,18 +4807,37 @@ async def main():
                 screen.blit(font.render(f"MUTATOR: {active_mutator}", True, (255, 100, 200)), (SCREEN_WIDTH // 2 - 10, 62))
 
             screen.blit(font.render(f"SCORE: {total_score}", True, (200, 210, 240)), (SCREEN_WIDTH - 150, 12))
+            if ai_jet():   # YOU = LAUNCHERS: which truck you drive and your stock this wave
+                alive = sum(1 for ln in launchers if ln["alive"])
+                for k, txt in enumerate((f"{names[0]}: YOUR LAUNCHERS (+20% vs AI)",
+                                         f"DOWN THE JET IN {cmd['timer'] // 60 + 1}s",
+                                         f"TRUCK {cmd['sel'] + 1}/{len(launchers)} ({alive} up)  [TAB/E next | 4 swap]",
+                                         "MISSILE " + (f"{cmd['missile_cd'] / 60:.1f}s" if cmd["missile_cd"] else "READY [UP]")
+                                         + "  DRONE " + (f"{cmd['drone_cd'] / 60:.1f}s" if cmd["drone_cd"] else "READY [DOWN]"))):
+                    t = font.render(txt, True, (0, 210, 255) if k == 0 else ((255, 230, 100) if k == 1 else (200, 230, 255)))
+                    screen.blit(t, (SCREEN_WIDTH - t.get_width() - 20, 84 + k * 18))
             draw_level_bar()
 
         elif game_state == "DUEL":
+            draw_level_bar()                     # pick any level for the duel (and 4 / SWAP swaps sides)
+            t = font.render(f"DUEL LEVEL {current_level}  |  [4] SWAP SIDES", True, (255, 230, 100))
+            screen.blit(t, t.get_rect(midtop=(SCREEN_WIDTH // 2, 110)))
             p2_col = (0, 210, 255) if p2_hp > 1 else (255, 60, 60)
-            p2_head = font.render("AI LAUNCHER" if modes["missile"] == "AUTO" else f"{names[1]}: LAUNCHER", True, (0, 210, 255))
+            p2_head = font.render(f"{names[0]}: YOUR LAUNCHER (+20% vs AI)" if ai_jet() else
+                                  ("AI LAUNCHER" if modes["missile"] == "AUTO" else f"{names[1]}: LAUNCHER"), True, (0, 210, 255))
             p2_num = num_font.render(f"HITS LEFT: {int(p2_hp)} / {p2_max_hp}", True, p2_col)
-            p2_sub = font.render(("FIRES MISSILES & DRONES" if modes["missile"] == "AUTO" else
+            p2_sub = font.render(("< > DRIVE | MISSILE | DRONE" if ai_jet() and touch["on"] else
+                                  "ARROWS DRIVE | UP MISSILE | DOWN DRONE" if ai_jet() else
+                                  "FIRES MISSILES & DRONES" if modes["missile"] == "AUTO" else
                                   "ARROWS DRIVE | UP MISSILE | DOWN DRONE") + f" | WINS: {p2_wins}", True, (200, 210, 230))
             screen.blit(p2_head, (SCREEN_WIDTH - p2_head.get_width() - 20, 12))
             screen.blit(p2_num, (SCREEN_WIDTH - p2_num.get_width() - 20, 30))
             screen.blit(p2_sub, (SCREEN_WIDTH - p2_sub.get_width() - 20, 56))
 
+        if shake["t"] > 0:                    # bunker buster shockwave: the whole view shakes for half a second
+            shake["t"] -= 1
+            amp = 2 + shake["t"] // 5
+            screen.scroll(random.randint(-amp, amp), random.randint(-amp, amp))
         if touch["on"] and game_state in ("CAMPAIGN", "DUEL") and p1_hp > 0:
             draw_touch_controls()
         draw_portrait_hint()

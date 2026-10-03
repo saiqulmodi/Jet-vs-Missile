@@ -128,7 +128,40 @@ def test_a_nation_unlocks_every_5_levels():
     assert [m["id"] for m in main.jet_loadout(5)] == ["r77", "kh29"]
     assert "ir_seeker" not in [m["id"] for m in main.jet_loadout(9)]
     assert "ir_seeker" in [m["id"] for m in main.jet_loadout(10)]          # heat seekers from level 10
-    assert len(main.jet_loadout(60)) == 17
+    assert len(main.jet_loadout(60)) == 22                                # 17 nation/IR + 5 special (to level 50)
+
+
+def test_special_ordnance_unlocks_by_level_and_keeps_m_names():
+    ids = lambda lvl: [m["id"] for m in main.jet_loadout(lvl)]
+    assert "aim9" not in ids(9) and "aim9" in ids(10)
+    assert {"agm65", "agm88"} <= set(ids(15)) and "agm65" not in ids(14)
+    assert "cluster_chute" not in ids(24) and "cluster_chute" in ids(25)
+    assert "bunker_buster" not in ids(49) and "bunker_buster" in ids(50)
+    assert {"hgv", "swarm_pod"} <= set(ids(75)) and "swarm_pod" not in ids(74)
+    for s in main.SPECIAL_ORDNANCE:
+        assert s["name"].endswith("-M") and s["role"] in main.MUNITION_ROLES
+    assert main.BUSTER_COOLDOWN == 600
+
+
+def test_ten_biomes_change_every_10_levels_and_cycle():
+    assert len(main.BIOMES) == 10
+    assert [main.biome_index(l) for l in (1, 10, 11, 20, 21, 91, 100, 101, 111)] == [0, 0, 1, 1, 2, 9, 9, 0, 1]
+
+
+def test_jet_has_100_distinct_colours_for_levels_1_to_100():
+    paints = {main.jet_paint(l)[0] for l in range(1, 101)}
+    assert len(paints) >= 95                     # (rounding to 0-255 RGB may merge a few neighbouring hues)
+    assert main.jet_paint(1) != main.jet_paint(101)       # past 100 the hues repeat in a different shade
+
+
+def test_laser_runs_5_seconds_then_cools_down_10():
+    bat = main.LaserBattery()
+    assert sum(bat.update(True) for _ in range(400)) == 300          # 5 s of beam held down, then it stops
+    assert bat.cooldown > 0
+    assert not any(bat.update(True) for _ in range(599 - 100))
+    for _ in range(200):
+        bat.update(False)
+    assert bat.cooldown == 0 and bat.update(True)                    # ready again after the 10 s
 
 
 def test_multi_barrel_launchers_fire_salvos():
@@ -283,12 +316,13 @@ def test_drone_launcher_sends_its_drones_and_one_missile():
 
 def test_control_modes_toggle_and_are_remembered(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "SAVE_FILE", tmp_path / "save.json")
-    assert main.load_control_modes() == {"jet": "AUTO", "missile": "MANUAL", "difficulty": "NORMAL"}   # defaults
+    assert main.load_control_modes() == {"jet": "AUTO", "missile": "MANUAL", "difficulty": "NORMAL", "side": "JET"}   # defaults
     assert main.toggle_mode("AUTO") == "MANUAL" and main.toggle_mode("MANUAL") == "AUTO"
     assert main.toggle_mode("NORMAL") == "EASY" and main.toggle_mode("EASY") == "NORMAL"
-    main.save_control_modes({"jet": "MANUAL", "missile": "AUTO", "difficulty": "EASY"})
+    assert main.toggle_mode("JET") == "LAUNCHER" and main.toggle_mode("LAUNCHER") == "JET"
+    main.save_control_modes({"jet": "MANUAL", "missile": "AUTO", "difficulty": "EASY", "side": "LAUNCHER"})
     main.update_save_data(500, 3)                                              # score saving keeps the modes
-    assert main.load_control_modes() == {"jet": "MANUAL", "missile": "AUTO", "difficulty": "EASY"}
+    assert main.load_control_modes() == {"jet": "MANUAL", "missile": "AUTO", "difficulty": "EASY", "side": "LAUNCHER"}
     assert main.load_save_data()["high_score"] == 500
 
 
@@ -382,3 +416,10 @@ def test_missile_gives_up_after_20_seconds_and_falls():
     for _ in range(120):
         e.update([], 400, 100, 800, 600)                       # it no longer chases the target above
     assert e.y > y0                                            # falling toward the ground
+
+
+def test_launcher_side_gets_20_percent_and_a_60_second_wave():
+    assert main.LAUNCHER_VS_AI_BUFF == pytest.approx(1.20)         # you play the launchers vs the AI jet
+    assert main.HUMAN_VS_AI_BUFF == pytest.approx(1.15)            # you fly the jet vs the AI
+    assert main.LAUNCHER_WAVE_FRAMES == 60 * 60
+    assert main.DUEL_SIDES == ("JET", "LAUNCHER")

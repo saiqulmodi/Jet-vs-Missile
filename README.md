@@ -29,6 +29,9 @@ The battlefield is as wide as your screen (16:9 computers, wider phones), so the
 | V | Stealth: 2 s invisible to missiles and launchers (no lock, fuses can't detect the jet, launchers hold fire); 8 s recharge |
 | B | SAFEGUARD: for 3 s every enemy missile and drone in the air is shot down by the jet's interceptors; ready again 10 s after you switched it on (phone: SAFE button; controller: hold button 7 + Cross/A) |
 | L | Switch to laser weapons |
+| Z (hold) | Laser ray, separate from the guns: up to 5 s, then 10 s cooldown (phone: LASER; controller: hold button 7 + Square) |
+| Y | Parachute cluster bomb (from level 25) |
+| U | Bunker buster (from level 50, one every 10 s) |
 | G | Next ordnance (nation missiles and bombs, from level 5) |
 | R / right click | Launch the selected ordnance |
 | X | FLIR pod: scan the ground for hidden silos (from level 10) |
@@ -38,6 +41,10 @@ The battlefield is as wide as your screen (16:9 computers, wider phones), so the
 | Start screen: click a name box | Type player 1 / player 2 names (Enter = done); each name keeps its own best level, high score and duel wins |
 | Start screen: J / K / H | Jet AUTO-MANUAL / duel launcher AUTO-MANUAL / AI EASY-NORMAL |
 | Start screen: 3 | Continue the campaign from your best level |
+| Start screen: 4 (or the button in the duel card) | Duel: YOU PLAY THE JET, or YOU PLAY THE LAUNCHER against the AI jet |
+| Duel or campaign: 4 / SWAP | Swap sides at any time: fly the jet, or play the launchers against the AI jet (the round / level restarts) |
+| Campaign as launchers: TAB / E | Drive the next truck (marked YOU); arrows / A D drive it, UP / W / SPACE fires your missiles, DOWN / S your drones. Down the AI jet to reach the next level |
+| Duel: N / P / level strip | Play the duel at any level you choose |
 
 **Phone / tablet** (turn it sideways): drag your thumb on the left half to fly, hold **FIRE** (it aims
 itself at the nearest missile, else a launcher), hold **SHIELD**, tap **STEALTH**, **CAMO**, **FLARES**,
@@ -98,6 +105,12 @@ On phones the duel is always against the AI launcher.
 - AI difficulty on the start screen: **EASY** (slower, simpler missiles and drones) or **NORMAL**.
 - Hints appear once when a new feature unlocks; the campaign card can continue from your best level.
 - All weapon and launcher names are the game's own "-M" versions (for example R-77-M, PATRIOT PAC-3-M).
+- The ground changes every 10 levels through 10 landscapes (grassland, deep ocean, sea shore, desert, mud,
+  red canyon, arctic, volcanic, jungle, city), and every level paints the jet in its own colour.
+  Explosions leave smoking craters until the landscape changes.
+- Extra jet weapons: Sidewinder-M (level 10, also hunts drones), Maverick-M and HARM-M (15), cluster bomb on
+  parachutes (25), bunker buster (50), hypersonic glide missile and swarm pod (75).
+- A jet shot down in the air ejects its pilot, who floats down under a rainbow parachute for 10 seconds.
 - When the jet is brought down it falls burning and explodes on the ground; a fresh jet with full HP
   starts the next round.
 

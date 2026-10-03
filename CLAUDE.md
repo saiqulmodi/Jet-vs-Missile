@@ -173,6 +173,67 @@ Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2
   7 + Cross. `SAFEGUARD_FRAMES` 180 on, `SAFEGUARD_COOLDOWN` 600 from activation (exact numbers asked: no +15%). Each
   frame `run_safeguard` downs every flying enemy missile (campaign + duel) and every drone, with interceptor trails and
   a dome; missiles on launchers are left. Own name, not the real system's. Timers pause with the round break / pause.
+- **Upgrade batch** (user, 2026-10-03, pasted plan "see it, try it, implement"; plan keys that clashed with existing
+  ones were remapped, nothing removed):
+  - Biomes: `BIOMES` (10), `biome_index(level)` = ((level-1)//10) % 10 (levels 1-10 = the original grassland). Sky
+    gradient + parallax far layer + ground detail; `set_biome` cross-fades 1.5 s. Duel = grassland. Ground blasts leave
+    craters (`add_crater`, hooked in `draw_blasts`) and the newest 20 keep smoking until the biome changes / new duel round.
+  - Jet paint: `jet_paint(level)` = 100 hues for levels 1-100 (+camo blotches), deeper shade after 100; passed as `paint=`
+    to `create_jet_sprite`.
+  - Laser: `LaserBattery`, key Z / touch LASER / controller hold 7 + Square; 5 s max, 10 s cooldown, slow recharge when
+    released. The L laser tiers use the same battery; while it cools the fire button shoots the gun.
+  - `SPECIAL_ORDNANCE` (in the G/R cycle): AIM-9 SIDEWINDER-M (10, IR, also hunts drones), AGM-65 MAVERICK-M + AGM-88
+    HARM-M (15), CLUSTER CHUTE-M (25, Y: bursts into 8 bomblets on coloured chutes), BUNKER BUSTER-M (50, U: digs in,
+    0.4 s, big blast, reveals/wrecks hidden silos, screen shake, strictly 10 s `BUSTER_COOLDOWN`), HYPERSONIC GLIDE-M +
+    SWARM POD-M (75). Flares stay available from level 1 (plan said level 5; not changed).
+  - Pilot ejection (user: "pilot coming out when aircraft crashes in the air with all seven colour parachute ... 10
+    seconds during the new fighter jet revive"): `start_jet_crash` above `GROUND_Y - 80` adds a pilot; `draw_pilots`
+    (crash, round break, play) floats it down under a 7-colour rainbow canopy, lands ~9 s, gone at `PILOT_FRAMES` 600.
+- **You = launcher vs AI jet** (user, 2026-10-03: "I wanted launcher as man and fighter as AI"; "it should be always
+  either way ... all levels displayed at the bottom, which I want to play is my choice"): `modes["side"]` JET /
+  LAUNCHER (`DUEL_SIDES`, saved as `duel_side`; start-screen button in the duel card, key 4, controller Share on
+  the start screen; in the duel 4 / touch SWAP swaps at any time and starts a fresh round). On LAUNCHER (`ai_jet()`):
+  your keys drive the launcher (arrows / A D, UP / W / SPACE missile, DOWN / S drone, 1st pad stick + Cross / Circle,
+  touch < > MISSILE DRONE); jet keys only take the AI's own presses (`post_key(k, ai=True)`). The AI jet: autopilot
+  with "attack" dives at the launcher, auto-fire (also on phones), `ai_jet_brain` (flares, shield, heal, SAFEGUARD
+  and stealth on NORMAL only; EASY reacts later and fires less). +15% goes to the human launcher (`launcher_buff`:
+  reload, drive); the AI jet gets 1.0. Launcher wins are recorded for player 1.
+  The duel now has the level strip (N / P / click / tap): `current_level` sets the duel's missiles, drones, biome
+  and jet colour (replaces the fixed DUEL_LEVEL 30).
+- **Campaign as the launchers** (user, 2026-10-03: "please do that, do not ask again"): the same side switch covers
+  the campaign (`ai_jet()` in CAMPAIGN; 4 / touch SWAP mid-game restarts the level on the other side). The AI flies the
+  jet (attack dives at the nearest ground target, `ai_jet_brain` also fires its ordnance). You drive the truck marked
+  YOU (`cmd["sel"]`, TAB / E / pad Square or R1 / touch NEXT = next truck; arrows / A D / stick / touch < >) and fire
+  your own wave stock (`command_missiles` / `command_drones`, x1.15) on top of the launchers' AI fire: UP / W / SPACE
+  missile (salvo from your truck, `COMMAND_MISSILE_RELOAD`), DOWN / S drone. Unused stock keeps the wave open. Down
+  the jet = next level (recorded for player 1); the jet clears the wave = same level again
+  (`(break_winner == "P1") != ai_jet()`). Jet hints are hidden in this mode.
+- **Manual launcher fixes** (user, 2026-10-03: "manual launcher is not working"): your truck drives along the WHOLE
+  ground (not its own small stretch, which was ~85 px with 7 trucks) and shoulders other trucks / drone launchers
+  aside; you never start in the fixed boss silo when a truck exists. The K switch is now **LAUNCHER: AI / YOU /
+  FRIEND** (`launcher_who()`; YOU = side LAUNCHER, FRIEND = 2-player MANUAL; phones AI / YOU) -- the old
+  "DUEL LAUNCHER: MANUAL" meant a second human and confused the user.
+- **Launchers keep firing, +20%** (user, 2026-10-03: "if launcher is less powerful than jet increase its power to 20%
+  instead of 15% for aspects; it is observed that launcher is not firing"): playing the launchers, `launcher_buff()` =
+  `LAUNCHER_VS_AI_BUFF` 1.20 (the human jet keeps `HUMAN_VS_AI_BUFF` 1.15). Campaign: no stock -- your truck fires
+  whenever reloaded, every other truck reloads and fires by itself (`auto_cd`), at most `COMMAND_SKY_CAP` 12 in the air;
+  the AI jet wins by surviving `LAUNCHER_WAVE_FRAMES` (60 s, HUD countdown), you win by downing it. UP/DOWN that can't
+  fire says why (RELOADING / TRUCK WRECKED / SKY FULL); duel launcher too (max missiles x1.2 = 4). Replaces the
+  per-wave stock described below.
+- **Half-speed AI jet + your multi-barrel launcher** (user, 2026-10-03: "let jet speed slower by 50% than current
+  speed, also add multi barrel missile launcher with double speed than AI jet"): applied when you play the launchers
+  (the human-flown jet keeps its speed). `AI_JET_SPEED_FACTOR` 0.5; the truck / duel launcher you drive is
+  `YOUR_MBML` "THUNDER MBML-M": `mbml_salvo` fires `MBML_SALVO` 4 rippled missiles at `MBML_SPEED_VS_JET` x the AI jet's
+  speed, reload `MBML_RELOAD` / 1.2; they lead the jet (`mbml_lead`); turn limit 30 deg/s unchanged. Duel cap 8.
+  Balance (headless runs): the AI jet's SAFEGUARD wiped every salvo and its shield blocked every blast, so the AI now
+  uses SAFEGUARD at most every 20 s with 5+ threats (`AI_SAFEGUARD_GAP`), flares every 6 s (`AI_FLARE_GAP`), and
+  decides once per missile whether to shield (50%, EASY 25%). Result: levels 11+ the launchers win most waves;
+  levels 1-10 (one truck) the jet usually survives the 60 s.
+- **+15% power for the human side** (now 20% for the launcher side, see above) (user, 2026-10-03: "build power is 15% more than AI"): playing the launchers,
+  `launcher_buff()` = 1.15: every missile of yours +15% speed and fuse reach, drones +15% hit, reload / driving / stock
+  +15%, duel launcher armour 14 hits; the AI jet gets 1.0 (`pbuff`, `campaign_jet_buff`). The EASY/NORMAL switch then
+  weakens only the AI jet (`ground_difficulty()` keeps your ground side NORMAL). The 30 deg/s missile turn limit and
+  the drone speed rule are unchanged. Playing the jet, the old +15% for the jet stays.
 - **Online 1v1 / 2v2: later** (user, 2026-10-03: "keep online 1vs1,2vs2 for future"). Not built. Plan when asked:
   server-authoritative simulation at 60 Hz, clients send inputs only, server sends snapshots at 20 Hz, clients
   interpolate 100 ms behind and predict their own jet; symmetric rules (`human_buff` = 1.0).
