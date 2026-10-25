@@ -7,6 +7,10 @@ and every few levels the missiles get faster, tougher and smarter.
 
 ## Play it
 
+- **Android app:** download [JetVsMissile.apk](https://github.com/saiqulmodi/Jet-vs-Missile/releases/download/v2.0/JetVsMissile.apk),
+  open it and allow "install unknown apps". Touch controls: the stick on the left flies the jet; BOMB, AGM, AAM,
+  FLARE, SAM, AERO, CLIMB and DIVE on the right. (Built with `wsl -e bash -l tools/build_android.sh`.)
+- **In the browser:** https://saiqulmodi.github.io/Jet-vs-Missile/
 - **On your phone (phone mode, full page):**
   https://stratos-technologies-fzco.github.io/stratos-games-site/games/saiqulmodi/index.html?mobile
   Open it, turn the phone sideways and tap once: the game goes full screen.
