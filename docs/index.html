@@ -461,32 +461,6 @@ frameborder="1"
     })();
     </script>
 
-    <!-- Firebase Analytics (project jet-vs-missile): anonymous counts of game openings, no personal data -->
-    <script type="module">
-      import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
-      import { getAnalytics, logEvent } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js";
-
-      const firebaseConfig = {
-        apiKey:            "AIzaSyAQMHnVym5R5Cuz8kLLGM-wXSpunH5n1O0",
-        authDomain:        "jet-vs-missile.firebaseapp.com",
-        projectId:         "jet-vs-missile",
-        storageBucket:     "jet-vs-missile.firebasestorage.app",
-        messagingSenderId: "1066603924962",
-        appId:             "1:1066603924962:web:9f2e5711c897eed9f5fdbb",
-        measurementId:     "G-X5WH552P33"
-      };
-
-      try {
-        const analytics = getAnalytics(initializeApp(firebaseConfig));
-        const sessionStart = Date.now();
-        logEvent(analytics, "game_session_start", {
-          platform: /Mobi|Android/i.test(navigator.userAgent) ? "mobile" : "desktop"
-        });
-        window.addEventListener("pagehide", () => {
-          logEvent(analytics, "game_session_end", { duration_seconds: Math.round((Date.now() - sessionStart) / 1000) });
-        });
-      } catch (e) {}
-    </script>
 
 </body>
 </html>

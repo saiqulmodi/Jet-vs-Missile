@@ -70,8 +70,6 @@ for name in ("jet_vs_missile.tar.gz", "jet_vs_missile.apk", "favicon.png"):
 # index.html: point at the local engine, drop the (404) browserfs script, start unpacking early
 html = open(os.path.join(PROJECT, "docs", "index.html"), encoding="utf-8").read()
 html = html.replace('<script src="https://pygame-web.github.io/cdn/0.9.3//browserfs.min.js"></script>', "")
-# Stratos rule: no tracking scripts from other sites in a box, so our own Firebase Analytics stays out of it
-html = re.sub(r"\s*<!-- Firebase Analytics.*?</script>", "", html, count=1, flags=re.S)
 html = html.replace("https://pygame-web.github.io/cdn/0.9.3/", "cdn/0.9.3/")
 # config.cdn must be a full URL: vtx.js does import(config.cdn + "../vt/xterm.js"), and a module
 # import of "cdn/..." is a bare specifier the browser rejects ("Failed to resolve module specifier",
