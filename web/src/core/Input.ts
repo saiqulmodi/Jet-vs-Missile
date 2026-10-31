@@ -36,6 +36,8 @@ export class Input {
   private ecmQueued = false;
   private padFlareWasDown = false;
   private padEcmWasDown = false;
+  private nightQueued = false;
+  private padNightWasDown = false;
   private padConnected = false;
   private padStartWasDown = false;
 
@@ -58,6 +60,7 @@ export class Input {
       if (!e.repeat && (e.code === 'Enter' || e.code === 'NumpadEnter')) this.startQueued = true;
       if (!e.repeat && e.code === 'KeyC') this.flareQueued = true; // main.py:1973 C = flares
       if (!e.repeat && e.code === 'KeyX') this.ecmQueued = true; // ECM gets its own key here (main.py shares C)
+      if (!e.repeat && e.code === 'KeyT') this.nightQueued = true; // main.py:2001 T = day / night
       this.keys.add(e.code);
       this.touchMode = false;
       this.showTouch(false);
@@ -91,6 +94,12 @@ export class Input {
   consumeEcm(): boolean {
     const s = this.ecmQueued;
     this.ecmQueued = false;
+    return s;
+  }
+
+  consumeNight(): boolean {
+    const s = this.nightQueued;
+    this.nightQueued = false;
     return s;
   }
 
@@ -147,6 +156,9 @@ export class Input {
         const ecmDown = !!(b[4] && b[4].pressed); // LB = ECM
         if (ecmDown && !this.padEcmWasDown) this.ecmQueued = true;
         this.padEcmWasDown = ecmDown;
+        const nightDown = !!(b[17] && b[17].pressed); // touchpad click (main.py:126)
+        if (nightDown && !this.padNightWasDown) this.nightQueued = true;
+        this.padNightWasDown = nightDown;
         break;
       }
     }
@@ -238,6 +250,9 @@ export class Input {
     });
     btn('ECM', 'ecm', (v) => {
       if (v) this.ecmQueued = true;
+    });
+    btn('NIGHT', 'night', (v) => {
+      if (v) this.nightQueued = true;
     });
 
     root.appendChild(layer);

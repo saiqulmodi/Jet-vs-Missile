@@ -24,6 +24,8 @@ export class JetModel {
   readonly group = new Group();
   private flame: Mesh;
   private flameMat: MeshBasicMaterial;
+  private nav: Mesh[] = [];
+  private strobe: Mesh;
 
   constructor() {
     const skin = new MeshLambertMaterial({ color: 0x8c97a3 });
@@ -59,6 +61,24 @@ export class JetModel {
     this.flame.rotation.x = Math.PI / 2; // tip points backwards (+Z)
     this.flame.position.z = 8;
     this.group.add(this.flame);
+
+    // navigation lights, shown at night: red port wingtip, green starboard, white tail strobe (main.py:2522-2528)
+    const lamp = (hex: number, x: number, y: number, z: number): Mesh => {
+      const m = new MeshBasicMaterial({ color: hex });
+      m.color.multiplyScalar(1.4);
+      const s = new Mesh(new SphereGeometry(0.25, 8, 6), m);
+      s.position.set(x, y, z);
+      s.visible = false;
+      this.group.add(s);
+      return s;
+    };
+    this.nav.push(lamp(0xff3228, -5.2, 0.1, 3.4), lamp(0x28ff5a, 5.2, 0.1, 3.4));
+    this.strobe = lamp(0xffffff, 0, 4.3, 5.8);
+  }
+
+  setNight(night: boolean, frame: number): void {
+    for (const n of this.nav) n.visible = night;
+    this.strobe.visible = night && frame % 60 < 5; // main.py:2527
   }
 
   /** 0 = engine idle glow, 1 = full afterburner plume */
@@ -66,7 +86,7 @@ export class JetModel {
     const len = afterburner ? 1.6 + 0.15 * Math.sin(t * 40) : 0.25 + 0.35 * throttle;
     this.flame.scale.set(afterburner ? 1.1 : 0.8, len, afterburner ? 1.1 : 0.8);
     this.flame.position.z = 6 + 2 * len;
-    this.flameMat.color.setHex(afterburner ? 0xff9a3a : 0xff7040);
+    this.flameMat.color.setHex(afterburner ? 0xff9a3a : 0xff7040).multiplyScalar(afterburner ? 3 : 1.5); // bright: blooms
     this.flameMat.opacity = afterburner ? 0.9 : 0.5;
   }
 }

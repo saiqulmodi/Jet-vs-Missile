@@ -60,6 +60,7 @@ export class Countermeasures {
       new MeshBasicMaterial({ color: 0xfffbe0, transparent: true, blending: AdditiveBlending, depthWrite: false }),
       MAX_FLARES,
     );
+    (this.mesh.material as MeshBasicMaterial).color.multiplyScalar(5); // white-hot: blooms
     this.mesh.instanceMatrix.setUsage(DynamicDrawUsage);
     this.mesh.frustumCulled = false;
     for (let i = 0; i < MAX_FLARES; i++) this.mesh.setMatrixAt(i, _zero);

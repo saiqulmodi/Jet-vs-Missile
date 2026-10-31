@@ -16,11 +16,11 @@ import {
   TEL_REVEAL_FRAMES,
 } from '../config';
 import { Pool } from '../core/Pool';
-import { heightAt } from '../world/Terrain';
-import { type CityPx, makeCities } from '../world/Cities';
+import { heightAt } from '../world/Height';
+import { MAP } from '../world/MapData';
 import { Countermeasures } from './Countermeasures';
 import { type Drone, makeDrones } from './Drones';
-import { type Launcher, LauncherMeshes, placeLaunchers } from './Launchers';
+import { type CityPx, type Launcher, LauncherMeshes, placeLaunchers } from './Launchers';
 import { Missile, type MissileEnd } from './Missile';
 
 const MISSILE_POOL = 8; // AUTO_SAM_CAP 4 airborne + room for falling / decoyed rounds
@@ -67,7 +67,7 @@ export class ThreatSystem {
   constructor(scene: Scene | null, seed = 2026) {
     // world layout from a fixed seed, like main.py's Random(2026) (main.py:343)
     const layoutRand = makeRand(2026);
-    this.cities = makeCities(layoutRand);
+    this.cities = MAP.cities; // main.py:399-407
     this.launchers = placeLaunchers(layoutRand, this.cities, heightAt);
     this.meshes = scene ? new LauncherMeshes(scene, this.launchers) : null;
     this.drones = makeDrones(scene);
@@ -198,8 +198,11 @@ export class ThreatSystem {
   }
 
   /** draw-side update (radar faces, hidden TELs, drones) */
-  syncMeshes(): void {
-    if (this.meshes) this.meshes.update(this.frame);
+  syncMeshes(night = false): void {
+    if (this.meshes) {
+      this.meshes.update(this.frame);
+      this.meshes.setNight(night, this.frame);
+    }
     for (let i = 0; i < this.drones.length; i++) this.drones[i].syncMesh();
     const items = this.missiles.items;
     for (let i = 0; i < items.length; i++) if (items[i].active) items[i].syncMesh();

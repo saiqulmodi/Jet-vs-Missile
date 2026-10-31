@@ -4,6 +4,7 @@ import {
   BoxGeometry,
   CylinderGeometry,
   InstancedMesh,
+  MeshBasicMaterial,
   MeshLambertMaterial,
   Object3D,
   type Scene,
@@ -28,7 +29,13 @@ import {
   WORLD_H_PX,
   WORLD_W_PX,
 } from '../config';
-import type { CityPx } from '../world/Cities';
+import { MAP } from '../world/MapData';
+
+export interface CityPx {
+  x: number;
+  y: number;
+  r: number;
+}
 import type { Seeker } from './Missile';
 
 export type LauncherKind = 'SAM' | 'TEL';
@@ -94,6 +101,7 @@ export function placeLaunchers(rand: () => number, cities: CityPx[], ground: (x:
     const sx = coastX(sy) + 260 + rand() * (WORLD_W_PX - 300 - coastX(sy) - 260); // main.py:446
     if (pts.some((p) => Math.hypot(p.x - sx, p.y - sy) < spacing)) continue; // main.py:447
     if (cities.some((c) => Math.hypot(c.x - sx, c.y - sy) < c.r + 140)) continue; // main.py:449
+    if (MAP.nearRiver(sx, sy, 70)) continue; // main.py:451
     const x = pxToX(sx);
     const z = pyToZ(sy);
     const y = ground(x, z);
@@ -130,6 +138,9 @@ export class LauncherMeshes {
   private cabs: InstancedMesh;
   private tubes: InstancedMesh;
   private telShown: boolean[] = [];
+  private beaconRed: InstancedMesh;
+  private beaconGreen: InstancedMesh;
+  private greenOn: boolean[] = [];
   private sams: Launcher[];
   private tels: Launcher[];
 
@@ -165,6 +176,26 @@ export class LauncherMeshes {
         this.put(this.cans, i * 4 + k, s.x + ox * c + oz * sn, s.y + 5, s.z - ox * sn + oz * c, s.phase, 1);
       }
     }
+    // night: red beacon on each radar, green when the battery is armed (main.py:2416-2423)
+    const lamp = (hex: number): InstancedMesh => {
+      const m = new MeshBasicMaterial({ color: hex });
+      m.color.multiplyScalar(5);
+      const im = new InstancedMesh(new SphereGeometry(2.2, 8, 6), m, ns);
+      im.frustumCulled = false;
+      im.visible = false;
+      scene.add(im);
+      return im;
+    };
+    this.beaconRed = lamp(0xff3228);
+    this.beaconGreen = lamp(0x3cff78);
+    for (let i = 0; i < ns; i++) {
+      const s = this.sams[i];
+      this.put(this.beaconRed, i, s.x - 10 * Math.cos(s.phase), s.y + 9, s.z + 10 * Math.sin(s.phase), 0, 1);
+      this.put(this.beaconGreen, i, s.x + 16 * Math.cos(s.phase), s.y + 4, s.z - 16 * Math.sin(s.phase), 0, 1);
+    }
+    for (let i = 0; i < ns; i++) this.greenOn.push(true);
+    this.beaconRed.instanceMatrix.needsUpdate = true;
+    this.beaconGreen.instanceMatrix.needsUpdate = true;
     for (let i = 0; i < nt; i++) this.telShown.push(true);
     this.update(0, true);
     this.pads.instanceMatrix.needsUpdate = true;
@@ -178,6 +209,23 @@ export class LauncherMeshes {
     _o.scale.setScalar(s);
     _o.updateMatrix();
     m.setMatrixAt(i, _o.matrix);
+  }
+
+  /** Night beacons: the red one blinks (main.py:2416 (frame // 20) % 3 == 0), green while armed. */
+  setNight(night: boolean, frame: number): void {
+    this.beaconRed.visible = night && Math.floor(frame / 20) % 3 === 0;
+    this.beaconGreen.visible = night;
+    if (!night) return;
+    let dirty = false;
+    for (let i = 0; i < this.sams.length; i++) {
+      const s = this.sams[i];
+      const on = s.armed;
+      if (on === this.greenOn[i]) continue;
+      this.greenOn[i] = on;
+      dirty = true;
+      this.put(this.beaconGreen, i, s.x + 16 * Math.cos(s.phase), s.y + 4, s.z - 16 * Math.sin(s.phase), 0, on ? 1 : 0);
+    }
+    if (dirty) this.beaconGreen.instanceMatrix.needsUpdate = true;
   }
 
   /** Radar faces turn (main.py:847); hidden TELs show only while seen. */

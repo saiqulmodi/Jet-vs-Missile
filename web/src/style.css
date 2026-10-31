@@ -71,6 +71,7 @@ button { background: var(--hud); color: #001520; border: 0; border-radius: 6px; 
 .mark-drone { color: #d28cff; border: 1px solid #d28cff; padding: 0 3px; }
 .touch-btn.flare { right: 210px; bottom: 40px; color: #fff5d2; }
 .touch-btn.ecm { right: 210px; bottom: 130px; color: #78c8ff; }
+.touch-btn.night { right: 16px; top: 120px; width: 60px; height: 60px; font-size: 11px; color: #aab9ff; }
 @media (max-width: 640px) { .rwr-arrow { height: 220px; } .hud-advice { font-size: 11px; } }
 
 .touch-layer { position: fixed; inset: 0; z-index: 15; pointer-events: none; }

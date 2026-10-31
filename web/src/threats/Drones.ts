@@ -19,7 +19,7 @@ import {
   WORLD_H_PX,
   WORLD_W_PX,
 } from '../config';
-import type { CityPx } from '../world/Cities';
+import type { CityPx } from './Launchers';
 
 const SPEED_MPS = DRONE_SPEED_VS_JET * JET_CRUISE_MPS; // main.py:2209, = 126 m/s
 const SPEED_PX = SPEED_MPS / (PX_M * 60 * TIME_SCALE); // back to main.py px/frame for the turn rule

@@ -15,7 +15,7 @@ export class Explosions {
 
   constructor(scene: Scene) {
     const geo = new SphereGeometry(1, 16, 10);
-    this.pool = new Pool<Blast>(12, () => {
+    this.pool = new Pool<Blast>(24, () => {
       const mat = new MeshBasicMaterial({ color: 0xffa040, transparent: true, depthWrite: false, blending: AdditiveBlending });
       const m = new Mesh(geo, mat);
       m.visible = false;
@@ -48,7 +48,7 @@ export class Explosions {
       const s = b.radius * (0.3 + 0.7 * Math.sqrt(t));
       b.mesh.scale.set(s, s, s);
       b.mat.opacity = 1 - t;
-      b.mat.color.setRGB(1, 0.75 - 0.45 * t, 0.35 - 0.3 * t);
+      b.mat.color.setRGB(1, 0.75 - 0.45 * t, 0.35 - 0.3 * t).multiplyScalar(3 - 2 * t);
     }
   }
 

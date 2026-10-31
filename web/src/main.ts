@@ -7,12 +7,18 @@ import { JET_REJOIN_FRAMES, pxToX, pyToZ, SAM_DAMAGE, START_X_PX, START_Y_PX, ST
 import { Input } from './core/Input';
 import { JetModel } from './flight/JetModel';
 import { JetPhysics } from './flight/JetPhysics';
+import { Contrail } from './fx/Contrail';
 import { Explosions } from './fx/Explosions';
+import { PostFx } from './fx/PostFx';
 import { Smoke } from './fx/Smoke';
 import { ThreatSystem } from './threats/ThreatSystem';
 import { Hud } from './ui/Hud';
+import { Clouds } from './world/Clouds';
+import { GroundWar } from './world/GroundWar';
+import { makeMapTextures } from './world/MapTexture';
 import { Sky } from './world/Sky';
 import { Terrain, heightAt } from './world/Terrain';
+import { addWorldProps } from './world/WorldProps';
 
 type State = 'start' | 'flying' | 'down';
 const MAX_STEPS = 5; // physics steps per display frame at most (after a stall, the game slows rather than spirals)
@@ -32,31 +38,68 @@ scene.background = new Color(0x87b4e6);
 const sky = new Sky();
 scene.fog = sky.fog;
 scene.add(sky.mesh);
-scene.add(new HemisphereLight(0xdfeaff, 0x4a5a3a, 1.1));
+const hemi = new HemisphereLight(0xdfeaff, 0x4a5a3a, 1.1);
+scene.add(hemi);
 const sun = new DirectionalLight(0xfff4e0, 2.2);
-sun.position.set(0.5, 1, 0.3);
+sun.position.copy(sky.sunDir);
 scene.add(sun);
 
-const terrain = new Terrain();
+const maps = makeMapTextures();
+const terrain = new Terrain(maps.day, maps.night);
+terrain.material.uniforms.uSunDir.value.copy(sky.sunDir);
 scene.add(terrain.mesh);
+addWorldProps(scene);
+const clouds = new Clouds();
+scene.add(clouds.mesh);
+const groundWar = new GroundWar(scene);
 
 const camera = new ChaseCamera(window.innerWidth / window.innerHeight);
+const post = new PostFx(renderer, scene, camera.camera);
 const input = new Input(app);
 const hud = new Hud(app);
 const rwr = new RwrAudio();
 const jet = new JetPhysics();
 const jetModel = new JetModel();
 scene.add(jetModel.group);
+const contrail = new Contrail();
+scene.add(contrail.mesh);
 const smoke = new Smoke();
 scene.add(smoke.mesh);
 const blasts = new Explosions(scene);
 const threats = new ThreatSystem(scene);
 threats.onBlast = (x, y, z, r, life) => blasts.spawn(x, y, z, r, life);
+const blast = (x: number, y: number, z: number, r: number, life: number): void => blasts.spawn(x, y, z, r, life);
+
+// ---------- day / night (main.py:1717, 2001: T) ----------
+let night = false;
+const tu = terrain.material.uniforms;
+function applyNight(): void {
+  if (night) {
+    // moonlight: the ground darkened to main.py's NIGHT_SHADE (66, 82, 100), every light added on top
+    sun.color.set(0x8090c0);
+    sun.intensity = 0.3;
+    hemi.intensity = 0.18;
+    tu.uSunColor.value.setRGB(0.035, 0.05, 0.08);
+    tu.uSkyLight.value.setRGB(0.03, 0.045, 0.07);
+    tu.uGroundLight.value.setRGB(0.01, 0.012, 0.018);
+    tu.uNightMix.value = 1;
+  } else {
+    sun.color.set(0xfff4e0);
+    sun.intensity = 2.2;
+    hemi.intensity = 1.1;
+    tu.uSunColor.value.setRGB(1, 0.95, 0.85).multiplyScalar(1.6);
+    tu.uSkyLight.value.setRGB(0.55, 0.62, 0.75);
+    tu.uGroundLight.value.setRGB(0.2, 0.22, 0.16);
+    tu.uNightMix.value = 0;
+  }
+  post.setNight(night);
+}
 
 // ---------- state ----------
 let state: State = 'start';
 let downFrames = 0;
 let simTime = 0;
+let frameNo = 0;
 let launchesSinceFrame = 0;
 const prevPos = new Vector3();
 const prevQuat = new Quaternion();
@@ -79,9 +122,11 @@ function resetWorld(): void {
   threats.reset((Date.now() & 0x7fffffff) | 1);
   smoke.clear();
   blasts.clear();
+  contrail.clear();
   hud.clearLog();
   wreckVisible = true;
   jetModel.group.visible = true;
+  terrain.snapTo(jet.pos.x, jet.pos.z);
   camera.snap(jet.pos, jet.quat);
 }
 
@@ -112,19 +157,31 @@ function jetDown(reason: string, onGround: boolean): void {
 }
 
 // ---------- one 60 Hz physics frame ----------
-let trailFrame = 0;
 function fixedStep(): void {
+  frameNo++;
   input.update(STEP);
   const wantsStart = input.consumeStart();
   const wantsFlare = input.consumeFlare();
   const wantsEcm = input.consumeEcm();
+  if (input.consumeNight()) {
+    night = !night;
+    applyNight();
+    if (state === 'flying') hud.say(night ? 'NIGHT VIEW' : 'DAY VIEW');
+  }
+  groundWar.step(jet.pos.x, jet.pos.z, blast);
   if (state === 'start') {
     if (wantsStart) startFlight();
     else {
       jet.step(STEP, null); // idles in level flight behind the menu
-      if (jet.pos.x > START_X + 30000) jet.reset(START_X, START_Z, START_HEADING);
+      if (jet.pos.x > START_X + 30000) {
+        jet.reset(START_X, START_Z, START_HEADING);
+        contrail.clear();
+      }
+      contrail.record(jet.pos, frameNo);
       threats.step(null, false);
     }
+    blasts.update(STEP);
+    simTime += STEP;
     return;
   }
   if (state === 'down') {
@@ -154,6 +211,7 @@ function fixedStep(): void {
       }
     }
     if (jet.crashing && wreckVisible) smoke.emit(jet.pos.x, jet.pos.y, jet.pos.z, 4, 3, 14, 0.15);
+    if (flying) contrail.record(jet.pos, frameNo);
   }
 
   // countermeasures (main.py:1955-1993 messages)
@@ -180,8 +238,7 @@ function fixedStep(): void {
   }
 
   // trails: missiles while the motor burns, flares while hot
-  trailFrame++;
-  if (trailFrame % 2 === 0) {
+  if (frameNo % 2 === 0) {
     const items = threats.missiles.items;
     for (let i = 0; i < items.length; i++) {
       const m = items[i];
@@ -190,7 +247,7 @@ function fixedStep(): void {
     const fl = threats.cm.flares.items;
     for (let i = 0; i < fl.length; i++) {
       const f = fl[i];
-      if (f.active && f.heat > 0.2 && trailFrame % 4 === 0) smoke.emit(f.pos.x, f.pos.y, f.pos.z, 2.5, 1.5, 5, 0.95);
+      if (f.active && f.heat > 0.2 && frameNo % 4 === 0) smoke.emit(f.pos.x, f.pos.y, f.pos.z, 2.5, 1.5, 5, 0.95);
     }
   }
 
@@ -230,17 +287,21 @@ function frame(now: number): void {
   jetModel.group.position.copy(drawPos);
   jetModel.group.quaternion.copy(drawQuat);
   jetModel.setFlame(jet.throttle, jet.afterburner, simTime);
-  threats.syncMeshes();
+  jetModel.setNight(night, frameNo);
+  threats.syncMeshes(night);
+  groundWar.sync(night);
 
   camera.update(dt, drawPos, drawQuat, jet.afterburner);
   const cp = camera.camera.position;
-  sky.update(cp.x, cp.y, cp.z);
+  sky.update(cp.x, cp.y, cp.z, night ? 1 : 0);
+  clouds.update(simTime, night ? 1 : 0);
+  contrail.update(cp, drawPos, frameNo, night ? 1 : 0);
   terrain.follow(drawPos.x, drawPos.z);
   if (state !== 'start') hud.update(jet, heightAt(jet.pos.x, jet.pos.z), camera.camera, threats, window.innerWidth, window.innerHeight);
   rwr.update(state === 'flying' ? threats.painting : 0, Hud.lockCount(threats), launchesSinceFrame, state === 'flying');
   launchesSinceFrame = 0;
 
-  renderer.render(scene, camera.camera);
+  post.render();
 
   fpsFrames++;
   fpsTime += dt;
@@ -253,6 +314,7 @@ function frame(now: number): void {
 
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
+  post.resize(window.innerWidth, window.innerHeight);
   camera.resize(window.innerWidth / window.innerHeight);
 });
 
@@ -263,13 +325,19 @@ if (import.meta.env.DEV)
     camera: camera.camera,
     jet,
     threats,
+    post,
     /** dev only: run n physics frames now (tests in a throttled browser window) */
     advance: (n: number) => {
       for (let i = 0; i < n; i++) fixedStep();
     },
     state: () => state,
+    setNight: (on: boolean) => {
+      night = on;
+      applyNight();
+    },
   };
 
+applyNight();
 resetWorld();
 hud.show(false);
 requestAnimationFrame(frame);

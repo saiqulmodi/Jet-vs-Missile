@@ -47,7 +47,8 @@ function notch(jet: JetPhysics, m: Missile, pull: number): void {
   los.copy(m.pos).sub(jet.pos).normalize();
   side.crossVectors(los, up).normalize();
   if (side.dot(jet.vel) < 0) side.negate();
-  steerLift(jet, side, pull);
+  side.y = jet.pos.y - heightAt(jet.pos.x, jet.pos.z) > 1500 ? -0.3 : 0; // dive while there is room
+  steerLift(jet, side.normalize(), pull);
 }
 
 function lateBreak(jet: JetPhysics, m: Missile): void {
@@ -95,6 +96,11 @@ function fly(ts: ThreatSystem, l: Launcher, startPos: Vector3, heading: number, 
       los.y = -0.15 * Math.hypot(los.x, los.z);
       steerLift(jet, los.normalize(), 1);
       inp.afterburner = true;
+    }
+    // every pilot except the passive one keeps clear of the ground: wings level and pull up when low and sinking
+    if (pilot !== 'passive' && jet.pos.y - heightAt(jet.pos.x, jet.pos.z) < 1000 && jet.vel.y < 0) {
+      inp.roll = Math.max(-1, Math.min(1, -jet.liftUp.dot(side.crossVectors(jet.vel, up).normalize()) * 3));
+      inp.pitch = 1;
     }
     jet.step(STEP, asInput);
     if (m.active) {

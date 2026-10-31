@@ -12,9 +12,11 @@ import {
   DECOY_BLOW_M,
   DECOY_TURN_PER_FRAME,
   FT,
+  GUIDED_SUSTAIN_FRAMES,
   JET_CRUISE_MPS,
   NOTCH_BEAM_COS,
   NOTCH_BREAK_PER_S,
+  NOTCH_DIVE_MPS,
   NOTCH_MIN_RANGE_M,
   PN_GAIN,
   SAM_BOOST_START,
@@ -35,8 +37,8 @@ const G0 = 9.81;
 /** Fins need air: the turn cap shrinks with air density, never below this share of main.py's value (new). */
 const MIN_TURN_SHARE = 0.25;
 const COAST_DRAG_K = 1.2e-4; // new: parasite drag after burnout, decel = k * (rho/rho0) * v^2 (37 m/s^2 at sea level, 554 m/s)
-const OUTTURN_RANGE_M = 1200; // new: inside this, being out-turned for OUTTURN_FRAMES = overshoot
-const OUTTURN_FRAMES = 10;
+const OUTTURN_RANGE_M = 800; // new: inside this, being out-turned for OUTTURN_FRAMES = overshoot
+const OUTTURN_FRAMES = 30;
 const PASS_RANGE_M = 1500; // new: inside this, a missile whose range starts opening has flown past the jet (overshoot)
 const MAX_G = 25; // new: structural / fin limit at sea level, falls with air density (main.py's 2D turn cap allows 74 G)
 const INDUCED_SHARE = 0.15; // new: pulling at the turn limit costs 15% of the turn acceleration as drag
@@ -65,6 +67,7 @@ const radarMat = new MeshLambertMaterial({ color: 0xebebe6 }); // main.py:1129 g
 const irMat = new MeshLambertMaterial({ color: 0xf0e0c8 });
 const unguidedMat = new MeshLambertMaterial({ color: 0xc8c8a8 }); // main.py:1129 unguided
 const flameMat = new MeshBasicMaterial({ color: 0xffa040 });
+flameMat.color.multiplyScalar(4); // motor burn: blooms
 
 export class Missile implements Poolable {
   active = false;
@@ -137,7 +140,7 @@ export class Missile implements Poolable {
     this.speed = SAM_SPEED_MPS * SAM_BOOST_START;
     // main.py:1069 boost/climb time scales with the target's altitude, at least 90 frames
     this.climbFrames = Math.max(SAM_CLIMB_MIN_FRAMES, (SAM_CLIMB_FRAMES * (target.y / FT)) / CRUISE_ALT_FT);
-    this.burnout = this.climbFrames + UNGUIDED_MOTOR_FRAMES; // main.py:1079
+    this.burnout = this.climbFrames + GUIDED_SUSTAIN_FRAMES; // guided: boost + sustain, then coast
     this.lockLost = false;
     this.lostBy = '';
     this.decoy = null;
@@ -215,14 +218,15 @@ export class Missile implements Poolable {
           }
         }
         // notching: a radar seeker sees Doppler; a jet flying across the line of sight hides in the clutter
-        // measured flat, the way the RWR shows it: the missile held at 3 or 9 o'clock, once its climb is over
+        // measured flat, the way the RWR shows it: the missile held at 3 or 9 o'clock, once its climb is over,
+        // and diving so the ground clutter is behind the jet
         if (!this.lockLost && this.seeker === 'RADAR' && this.age > this.climbFrames) {
           const hx = _r.x;
           const hz = _r.z;
           const hd = Math.hypot(hx, hz);
           const tv = Math.hypot(tgtVel.x, tgtVel.z);
           const radial = hd > 0 ? Math.abs(tgtVel.x * hx + tgtVel.z * hz) / hd : tv;
-          if (hd > NOTCH_MIN_RANGE_M && tv > 1 && radial < NOTCH_BEAM_COS * tv && rand() < NOTCH_PER_FRAME) {
+          if (hd > NOTCH_MIN_RANGE_M && tv > 1 && tgtVel.y < -NOTCH_DIVE_MPS && radial < NOTCH_BEAM_COS * tv && rand() < NOTCH_PER_FRAME) {
             this.lockLost = true;
             this.lostBy = 'notch';
           }
@@ -241,7 +245,7 @@ export class Missile implements Poolable {
           const tv = Math.max(1, tgtVel.length());
           const jetTurn = _omega.copy(tgtVel).sub(this.prevTgtVel).length() / (tv * STEP);
           const missileTurn = aMax / Math.max(1, this.speed);
-          const outTurned = (a > aMax || jetTurn > missileTurn) && range < OUTTURN_RANGE_M;
+          const outTurned = jetTurn > missileTurn && range < OUTTURN_RANGE_M;
           this.saturated = outTurned ? this.saturated + 1 : 0;
           if (this.saturated > OUTTURN_FRAMES) {
             this.lockLost = true;

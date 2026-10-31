@@ -277,8 +277,8 @@ export class Hud {
         let adv: string;
         if (radar + ir === 0) adv = 'UNGUIDED - TURN HARD OUT OF ITS PATH';
         else if (ir > 0 && cm.flareCd === 0) adv = 'PRESS C (PAD Y)  -  FLARES';
-        else if (radar > 0 && cm.ecmCd === 0) adv = 'PRESS X (PAD LB)  -  ECM JAMMER   |   NOTCH: FLY 90 DEG ACROSS IT';
-        else if (radar > 0) adv = 'NOTCH: FLY 90 DEG ACROSS IT, THEN BREAK HARD LATE';
+        else if (radar > 0 && cm.ecmCd === 0) adv = 'PRESS X (PAD LB)  -  ECM JAMMER   |   NOTCH: FLY 90 DEG ACROSS IT AND DIVE';
+        else if (radar > 0) adv = 'NOTCH: FLY 90 DEG ACROSS IT AND DIVE, THEN BREAK HARD LATE';
         else adv = `FLARES RELOADING ${(cm.flareCd / 60).toFixed(1)} s - BREAK HARD LATE`;
         this.advice.set(adv);
       }

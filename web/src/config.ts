@@ -80,7 +80,8 @@ export const SAM_BOOST_START = 0.35; // main.py:1106, speed starts at 35% and ra
 export const SAM_LIFE_FRAMES = 2400; // main.py:76, 40 s, then it self-destructs
 export const SAM_TURN_PER_FRAME = 0.022; // main.py:1120, rad/frame (kept per frame, not time-scaled: 1.32 rad/s)
 export const SAM_GUIDED_SHARE = 0.5; // main.py:77, each launch is guided or unguided at random
-export const UNGUIDED_MOTOR_FRAMES = 300; // main.py:78, motor runs 5 s after the climb (guided ones too in 3D, then coast)
+export const UNGUIDED_MOTOR_FRAMES = 300; // main.py:78, unguided: motor runs 5 s after the climb
+export const GUIDED_SUSTAIN_FRAMES = 600; // new: guided motor burns 10 s after the climb, then coasts (main.py:76 burns all 40 s)
 export const ROCKET_WARN_RANGE_M = 400 * PX_M; // main.py:79, warn about an unguided round this close on a crossing course
 export const ROCKET_WARN_COS = 0.8; // main.py:2518
 export const PN_GAIN = 3.5; // new: proportional navigation constant N (3-4)
@@ -104,3 +105,4 @@ export const FLARE_MIN_CLIMB = 0.5; // main.py:1988, flares only pull missiles p
 export const NOTCH_BEAM_COS = 0.25; // new: notching = the jet's own speed toward/away from the missile under 25% (within ~15 deg of 90)
 export const NOTCH_BREAK_PER_S = 0.45; // new: chance per second a radar seeker loses a notching jet
 export const NOTCH_MIN_RANGE_M = 500; // new: too close to notch (the seeker sees the skin directly)
+export const NOTCH_DIVE_MPS = 15; // new: the notch needs ground clutter behind the jet: descending at least this fast
