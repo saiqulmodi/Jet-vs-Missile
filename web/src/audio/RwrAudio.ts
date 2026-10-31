@@ -2,7 +2,8 @@
 //   search: a short low chirp every 2 s while a launcher has you inside its ring
 //   lock:   a fast steady pulse while a guided missile is tracking you
 //   launch: a rising/falling warble for 1.2 s when a missile is fired at you
-// The AudioContext starts on the first key press or tap (browsers block sound before that).
+// Uses the shared AudioContext (AudioBus), started by the first key press or tap.
+import { audioBus } from './AudioBus';
 
 export class RwrAudio {
   private ctx: AudioContext | null = null;
@@ -15,24 +16,13 @@ export class RwrAudio {
   private launchUntil = 0;
 
   constructor() {
-    const start = (): void => {
-      if (this.ctx) {
-        if (this.ctx.state === 'suspended') void this.ctx.resume();
-        return;
-      }
-      this.build();
-    };
-    window.addEventListener('keydown', start);
-    window.addEventListener('pointerdown', start);
+    audioBus.onReady((ctx, out) => this.build(ctx, out));
   }
 
-  private build(): void {
-    const Ctor = window.AudioContext;
-    if (!Ctor) return;
-    const ctx = new Ctor();
+  private build(ctx: AudioContext, out: GainNode): void {
     const master = ctx.createGain();
-    master.gain.value = 0.18;
-    master.connect(ctx.destination);
+    master.gain.value = 0.2;
+    master.connect(out);
     const voice = (type: OscillatorType, freq: number): [OscillatorNode, GainNode] => {
       const o = ctx.createOscillator();
       o.type = type;
@@ -50,7 +40,6 @@ export class RwrAudio {
     this.launchGain = lg;
     this.ctx = ctx;
   }
-
   /**
    * Call once per display frame.
    * @param painting launchers that have the jet in their ring

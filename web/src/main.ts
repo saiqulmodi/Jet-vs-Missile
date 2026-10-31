@@ -2,7 +2,9 @@
 import './style.css';
 import { Color, DirectionalLight, HemisphereLight, Quaternion, Scene, Vector3, WebGLRenderer } from 'three';
 import { RwrAudio } from './audio/RwrAudio';
+import { SFX } from './audio/Sfx';
 import { ChaseCamera } from './camera/ChaseCamera';
+import { Showcase } from './camera/Showcase';
 import { JET_REJOIN_FRAMES, pxToX, pyToZ, SAM_DAMAGE, START_X_PX, START_Y_PX, STEP } from './config';
 import { Input } from './core/Input';
 import { JetModel } from './flight/JetModel';
@@ -13,6 +15,7 @@ import { PostFx } from './fx/PostFx';
 import { Smoke } from './fx/Smoke';
 import { ThreatSystem } from './threats/ThreatSystem';
 import { Hud } from './ui/Hud';
+import { Intro } from './ui/Intro';
 import { Clouds } from './world/Clouds';
 import { GroundWar } from './world/GroundWar';
 import { makeMapTextures } from './world/MapTexture';
@@ -69,12 +72,15 @@ const blasts = new Explosions(scene);
 const threats = new ThreatSystem(scene);
 threats.onBlast = (x, y, z, r, life) => blasts.spawn(x, y, z, r, life);
 const blast = (x: number, y: number, z: number, r: number, life: number): void => blasts.spawn(x, y, z, r, life);
+const camDist = (p: Vector3): number => p.distanceTo(camera.camera.position);
 
-// ---------- day / night (main.py:1717, 2001: T) ----------
+// ---------- day / night (main.py:1717, 2001: T); the showcase can show night for one shot ----------
 let night = false;
+let demoNight = false;
 const tu = terrain.material.uniforms;
+const isNight = (): boolean => night || demoNight;
 function applyNight(): void {
-  if (night) {
+  if (isNight()) {
     // moonlight: the ground darkened to main.py's NIGHT_SHADE (66, 82, 100), every light added on top
     sun.color.set(0x8090c0);
     sun.intensity = 0.3;
@@ -92,7 +98,7 @@ function applyNight(): void {
     tu.uGroundLight.value.setRGB(0.2, 0.22, 0.16);
     tu.uNightMix.value = 0;
   }
-  post.setNight(night);
+  post.setNight(isNight());
 }
 
 // ---------- state ----------
@@ -107,13 +113,30 @@ const drawPos = new Vector3();
 const drawQuat = new Quaternion();
 let wreckVisible = true;
 
-const startScreen = document.getElementById('start') as HTMLDivElement;
 const downScreen = document.getElementById('down') as HTMLDivElement;
 const downTitle = document.getElementById('down-title') as HTMLDivElement;
 const downHint = document.getElementById('down-hint') as HTMLDivElement;
 const fpsNode = document.getElementById('fps') as HTMLDivElement;
-document.getElementById('start-btn')!.addEventListener('click', () => input.queueStart());
 document.getElementById('restart-btn')!.addEventListener('click', () => input.queueStart());
+const intro = new Intro(() => input.queueStart());
+
+const showcase = new Showcase({
+  jet,
+  threats,
+  start: { x: START_X, z: START_Z, heading: START_HEADING },
+  setDemoNight: (on) => {
+    if (demoNight === on) return;
+    demoNight = on;
+    applyNight();
+  },
+  clearFx: () => {
+    smoke.clear();
+    blasts.clear();
+    contrail.clear();
+  },
+  snapChase: () => camera.snap(jet.pos, jet.quat),
+  snapTerrain: (x, z) => terrain.snapTo(x, z),
+});
 
 function resetWorld(): void {
   jet.reset(START_X, START_Z, START_HEADING);
@@ -131,9 +154,10 @@ function resetWorld(): void {
 }
 
 function startFlight(): void {
+  showcase.end();
+  intro.hide();
   resetWorld();
   state = 'flying';
-  startScreen.style.display = 'none';
   downScreen.style.display = 'none';
   hud.show(true);
   input.setTouchVisible(true);
@@ -145,6 +169,7 @@ function jetDown(reason: string, onGround: boolean): void {
   jet.alive = false;
   if (onGround) {
     blasts.spawn(jet.pos.x, jet.pos.y, jet.pos.z, 60, 2.2);
+    SFX.play('explode'); // main.py:2337
     wreckVisible = false;
     jetModel.group.visible = false;
   } else {
@@ -169,72 +194,78 @@ function fixedStep(): void {
     if (state === 'flying') hud.say(night ? 'NIGHT VIEW' : 'DAY VIEW');
   }
   groundWar.step(jet.pos.x, jet.pos.z, blast);
+
   if (state === 'start') {
-    if (wantsStart) startFlight();
-    else {
-      jet.step(STEP, null); // idles in level flight behind the menu
-      if (jet.pos.x > START_X + 30000) {
-        jet.reset(START_X, START_Z, START_HEADING);
-        contrail.clear();
-      }
-      contrail.record(jet.pos, frameNo);
-      threats.step(null, false);
+    if (wantsStart) {
+      startFlight();
+      return;
     }
-    blasts.update(STEP);
-    simTime += STEP;
-    return;
-  }
-  if (state === 'down') {
-    downFrames++;
-    if (downFrames >= JET_REJOIN_FRAMES) {
-      downHint.textContent = input.touchMode ? 'Tap RESTART' : 'Press Enter (or A / Start on a controller) to restart';
-      if (wantsStart) {
-        startFlight();
-        return;
+    // the showcase behind the logo
+    showcase.step();
+    jet.step(STEP, null);
+    contrail.record(jet.pos, frameNo);
+    threats.step(showcase.tracking ? jet : null, false);
+  } else {
+    if (state === 'down') {
+      downFrames++;
+      if (downFrames >= JET_REJOIN_FRAMES) {
+        downHint.textContent = input.touchMode ? 'Tap RESTART' : 'Press Enter (or A / Start on a controller) to restart';
+        if (wantsStart) {
+          startFlight();
+          return;
+        }
       }
     }
-  }
 
-  prevPos.copy(jet.pos);
-  prevQuat.copy(jet.quat);
-  const flying = state === 'flying';
-  if (wreckVisible) {
-    jet.step(STEP, flying ? input : null);
-    const ground = heightAt(jet.pos.x, jet.pos.z);
-    if (jet.pos.y <= ground + 1.5) {
-      jet.pos.y = ground + 1.5;
-      if (flying) jetDown('CRASHED INTO THE GROUND', true);
-      else {
-        blasts.spawn(jet.pos.x, jet.pos.y, jet.pos.z, 60, 2.2);
-        wreckVisible = false;
-        jetModel.group.visible = false;
+    prevPos.copy(jet.pos);
+    prevQuat.copy(jet.quat);
+    const flying = state === 'flying';
+    if (wreckVisible) {
+      jet.step(STEP, flying ? input : null);
+      const ground = heightAt(jet.pos.x, jet.pos.z);
+      if (jet.pos.y <= ground + 1.5) {
+        jet.pos.y = ground + 1.5;
+        if (flying) jetDown('CRASHED INTO THE GROUND', true);
+        else {
+          blasts.spawn(jet.pos.x, jet.pos.y, jet.pos.z, 60, 2.2);
+          SFX.play('explode', camDist(jet.pos)); // main.py:2336-2337 the wreck hits the ground
+          wreckVisible = false;
+          jetModel.group.visible = false;
+        }
+      }
+      if (jet.crashing && wreckVisible) smoke.emit(jet.pos.x, jet.pos.y, jet.pos.z, 4, 3, 14, 0.15);
+      if (flying) contrail.record(jet.pos, frameNo);
+    }
+
+    // countermeasures (main.py:1955-1993 messages and sounds)
+    if (flying) {
+      const cm = threats.cm;
+      if (wantsFlare) {
+        if (cm.fireFlares(jet.pos, jet.vel)) {
+          hud.say('FLARES');
+          SFX.play('flare'); // main.py:1978
+        } else hud.say(`FLARES RELOADING ${(cm.flareCd / 60).toFixed(1)} s`);
+      }
+      if (wantsEcm) {
+        const broken = cm.fireEcm(jet.pos, threats.missiles.items, threats.rand);
+        if (broken < 0) hud.say(`ECM RELOADING ${(cm.ecmCd / 60).toFixed(1)} s`);
+        else {
+          hud.say(broken ? `ECM - ${broken} LOCK BROKEN` : 'ECM');
+          SFX.play('ignite'); // main.py:1961
+        }
       }
     }
-    if (jet.crashing && wreckVisible) smoke.emit(jet.pos.x, jet.pos.y, jet.pos.z, 4, 3, 14, 0.15);
-    if (flying) contrail.record(jet.pos, frameNo);
-  }
 
-  // countermeasures (main.py:1955-1993 messages)
-  if (state === 'flying') {
-    const cm = threats.cm;
-    if (wantsFlare) {
-      if (cm.fireFlares(jet.pos, jet.vel)) hud.say('FLARES');
-      else hud.say(`FLARES RELOADING ${(cm.flareCd / 60).toFixed(1)} s`);
+    threats.step(flying ? jet : null, flying);
+    launchesSinceFrame += threats.launchedThisFrame;
+    if (flying && threats.launchedThisFrame > 0) SFX.play('ignite', 2000); // main.py:1857 launch
+    if (threats.decoyedThisFrame > 0) hud.say(`FLARES - ${threats.decoyedThisFrame} SAM DECOYED`); // main.py:1993
+    if (flying && threats.hitThisFrame) {
+      // main.py:2312-2323 proximity fuse: one SAM hit = shot down
+      SFX.play('explode'); // main.py:2317
+      jet.hp = Math.max(0, jet.hp - SAM_DAMAGE);
+      if (jet.hp === 0) jetDown('SHOT DOWN BY A SAM', false);
     }
-    if (wantsEcm) {
-      const broken = cm.fireEcm(jet.pos, threats.missiles.items, threats.rand);
-      if (broken < 0) hud.say(`ECM RELOADING ${(cm.ecmCd / 60).toFixed(1)} s`);
-      else hud.say(broken ? `ECM - ${broken} LOCK BROKEN` : 'ECM');
-    }
-  }
-
-  threats.step(state === 'flying' ? jet : null, state === 'flying');
-  launchesSinceFrame += threats.launchedThisFrame;
-  if (threats.decoyedThisFrame > 0) hud.say(`FLARES - ${threats.decoyedThisFrame} SAM DECOYED`); // main.py:1993
-  if (state === 'flying' && threats.hitThisFrame) {
-    // main.py:2312-2323 proximity fuse: one SAM hit = shot down
-    jet.hp = Math.max(0, jet.hp - SAM_DAMAGE);
-    if (jet.hp === 0) jetDown('SHOT DOWN BY A SAM', false);
   }
 
   // trails: missiles while the motor burns, flares while hot
@@ -287,18 +318,19 @@ function frame(now: number): void {
   jetModel.group.position.copy(drawPos);
   jetModel.group.quaternion.copy(drawQuat);
   jetModel.setFlame(jet.throttle, jet.afterburner, simTime);
-  jetModel.setNight(night, frameNo);
-  threats.syncMeshes(night);
-  groundWar.sync(night);
+  jetModel.setNight(isNight(), frameNo);
+  threats.syncMeshes(isNight());
+  groundWar.sync(isNight());
 
-  camera.update(dt, drawPos, drawQuat, jet.afterburner);
+  if (!(state === 'start' && showcase.camera(camera.camera, dt))) camera.update(dt, drawPos, drawQuat, jet.afterburner);
   const cp = camera.camera.position;
-  sky.update(cp.x, cp.y, cp.z, night ? 1 : 0);
-  clouds.update(simTime, night ? 1 : 0);
-  contrail.update(cp, drawPos, frameNo, night ? 1 : 0);
-  terrain.follow(drawPos.x, drawPos.z);
+  const nightMix = isNight() ? 1 : 0;
+  sky.update(cp.x, cp.y, cp.z, nightMix);
+  clouds.update(simTime, nightMix);
+  contrail.update(cp, drawPos, frameNo, nightMix);
+  terrain.follow(state === 'start' ? cp.x : drawPos.x, state === 'start' ? cp.z : drawPos.z);
   if (state !== 'start') hud.update(jet, heightAt(jet.pos.x, jet.pos.z), camera.camera, threats, window.innerWidth, window.innerHeight);
-  rwr.update(state === 'flying' ? threats.painting : 0, Hud.lockCount(threats), launchesSinceFrame, state === 'flying');
+  rwr.update(state === 'flying' ? threats.painting : 0, state === 'flying' ? Hud.lockCount(threats) : 0, launchesSinceFrame, state === 'flying');
   launchesSinceFrame = 0;
 
   post.render();
@@ -306,7 +338,7 @@ function frame(now: number): void {
   fpsFrames++;
   fpsTime += dt;
   if (fpsTime >= 0.5) {
-    fpsNode.textContent = `${Math.round(fpsFrames / fpsTime)} FPS`;
+    fpsNode.textContent = state === 'start' ? '' : `${Math.round(fpsFrames / fpsTime)} FPS`; // the intro shows only the logo
     fpsFrames = 0;
     fpsTime = 0;
   }
@@ -340,4 +372,5 @@ if (import.meta.env.DEV)
 applyNight();
 resetWorld();
 hud.show(false);
+showcase.begin();
 requestAnimationFrame(frame);
