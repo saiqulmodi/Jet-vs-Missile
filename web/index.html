@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 L20 18 L30 24 L20 23 L18 30 L14 30 L12 23 L2 24 L12 18 Z' fill='%2300e6ff'/%3E%3C/svg%3E" />
+    <title>Jet vs Missile</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="fps"></div>
+
+    <div id="start" class="screen">
+      <div class="panel">
+        <h1>JET vs MISSILE</h1>
+        <p class="sub">You start airborne at 35,000 ft. SAM batteries ahead fire when you fly inside their ring.
+          One hit = shot down. Dodge: break hard, dive, or outrun on afterburner.</p>
+        <table class="keys">
+          <tr><th>Action</th><th>Keyboard</th><th>Controller</th><th>Touch</th></tr>
+          <tr><td>Pull up / push down</td><td>S / W &nbsp;or&nbsp; Down / Up</td><td>Left stick back / forward</td><td>Stick down / up</td></tr>
+          <tr><td>Roll left / right</td><td>A / D &nbsp;or&nbsp; Left / Right</td><td>Left stick left / right</td><td>Stick left / right</td></tr>
+          <tr><td>Rudder left / right</td><td>Q / E</td><td>Right stick</td><td>-</td></tr>
+          <tr><td>Throttle up / down</td><td>R / F</td><td>RT / LT</td><td>THR + / THR -</td></tr>
+          <tr><td>Afterburner (hold)</td><td>Space</td><td>A or RB</td><td>AB</td></tr>
+          <tr><td>Start / restart</td><td>Enter</td><td>A or Start</td><td>Tap the button</td></tr>
+        </table>
+        <button id="start-btn">START (Enter)</button>
+      </div>
+    </div>
+
+    <div id="down" class="screen" style="display: none">
+      <div class="panel small">
+        <h2 id="down-title"></h2>
+        <div id="down-hint"></div>
+        <button id="restart-btn">RESTART</button>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
