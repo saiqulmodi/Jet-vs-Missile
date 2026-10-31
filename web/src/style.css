@@ -50,6 +50,29 @@ button { background: var(--hud); color: #001520; border: 0; border-radius: 6px; 
 .mark-site { color: #ffcc40; border: 1px solid #ffcc40; padding: 0 3px; }
 .mark-missile { color: var(--warn); border: 2px solid var(--warn); border-radius: 50%; width: 30px; height: 30px; line-height: 26px; text-align: center; font-weight: bold; }
 
+/* Phase 2: lock warning, countermeasures, RWR, log, markers */
+.hud-border { position: absolute; inset: 0; border: 5px solid rgba(255, 40, 40, 0.85); display: none; } /* main.py:2551 */
+.hud-ecm-ring { position: absolute; left: 50%; top: 50%; width: 120px; height: 120px; border: 2px solid #78c8ff; border-radius: 50%; display: none; }
+.hud-advice { position: absolute; top: calc(24% + 30px); left: 50%; transform: translateX(-50%); font-size: 14px; color: #fff5d2; white-space: nowrap; }
+.hud-cm { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 11px; }
+.hud-cm-label { width: 46px; }
+.hud-cm-bar { width: 60px; height: 5px; background: rgba(40, 50, 60, 0.9); }
+.hud-cm-fill { height: 100%; width: 100%; background: #6e6e6e; }
+.hud-cm-fill.flare.ready { background: #fff5d2; } /* main.py:2536 colours */
+.hud-cm-fill.ecm.ready { background: #78c8ff; }
+.hud-cm-state { min-width: 44px; }
+.hud-log { position: absolute; right: 16px; bottom: 26px; text-align: right; font-size: 12px; color: #dce6f0; }
+.hud-log-line { min-height: 15px; }
+.rwr-arrow { position: absolute; left: 50%; top: 50%; width: 0; height: 300px; }
+.rwr-tip { position: absolute; left: -9px; top: 0; width: 0; height: 0; border-left: 9px solid transparent; border-right: 9px solid transparent; border-bottom: 18px solid #ff3c32; }
+.rwr-label { position: absolute; left: 0; top: -20px; color: #ff6e5a; font-size: 11px; white-space: nowrap; font-weight: bold; }
+.mark-site.tel { color: #e6c85a; border-color: #e6c85a; }
+.mark-site.in-range { color: #ff5040; border-color: #ff5040; }
+.mark-drone { color: #d28cff; border: 1px solid #d28cff; padding: 0 3px; }
+.touch-btn.flare { right: 210px; bottom: 40px; color: #fff5d2; }
+.touch-btn.ecm { right: 210px; bottom: 130px; color: #78c8ff; }
+@media (max-width: 640px) { .rwr-arrow { height: 220px; } .hud-advice { font-size: 11px; } }
+
 .touch-layer { position: fixed; inset: 0; z-index: 15; pointer-events: none; }
 .stick-zone { position: absolute; left: 0; top: 0; bottom: 0; width: 50%; pointer-events: auto; }
 .stick-base { position: absolute; left: 50px; bottom: 50px; border-radius: 50%; border: 2px solid rgba(0, 230, 255, 0.45); background: rgba(0, 20, 40, 0.25); pointer-events: none; }

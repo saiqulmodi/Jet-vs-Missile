@@ -32,6 +32,10 @@ export class Input {
   private kRoll = 0;
   private kYaw = 0;
   private startQueued = false;
+  private flareQueued = false;
+  private ecmQueued = false;
+  private padFlareWasDown = false;
+  private padEcmWasDown = false;
   private padConnected = false;
   private padStartWasDown = false;
 
@@ -52,6 +56,8 @@ export class Input {
     window.addEventListener('keydown', (e) => {
       if (PREVENT.has(e.code)) e.preventDefault();
       if (!e.repeat && (e.code === 'Enter' || e.code === 'NumpadEnter')) this.startQueued = true;
+      if (!e.repeat && e.code === 'KeyC') this.flareQueued = true; // main.py:1973 C = flares
+      if (!e.repeat && e.code === 'KeyX') this.ecmQueued = true; // ECM gets its own key here (main.py shares C)
       this.keys.add(e.code);
       this.touchMode = false;
       this.showTouch(false);
@@ -74,6 +80,18 @@ export class Input {
   /** Enter / gamepad A or Start / a tap on a start or restart button. */
   queueStart(): void {
     this.startQueued = true;
+  }
+
+  consumeFlare(): boolean {
+    const s = this.flareQueued;
+    this.flareQueued = false;
+    return s;
+  }
+
+  consumeEcm(): boolean {
+    const s = this.ecmQueued;
+    this.ecmQueued = false;
+    return s;
   }
 
   consumeStart(): boolean {
@@ -123,6 +141,12 @@ export class Input {
         const startDown = !!((b[9] && b[9].pressed) || (b[0] && b[0].pressed));
         if (startDown && !this.padStartWasDown) this.startQueued = true;
         this.padStartWasDown = startDown;
+        const flareDown = !!(b[3] && b[3].pressed); // Y = flares (main.py:132)
+        if (flareDown && !this.padFlareWasDown) this.flareQueued = true;
+        this.padFlareWasDown = flareDown;
+        const ecmDown = !!(b[4] && b[4].pressed); // LB = ECM
+        if (ecmDown && !this.padEcmWasDown) this.ecmQueued = true;
+        this.padEcmWasDown = ecmDown;
         break;
       }
     }
@@ -209,6 +233,12 @@ export class Input {
     btn('THR +', 'thr-up', (v) => (this.touchThrUp = v));
     btn('THR -', 'thr-down', (v) => (this.touchThrDown = v));
     btn('AB', 'ab', (v) => (this.touchAb = v));
+    btn('FLARE', 'flare', (v) => {
+      if (v) this.flareQueued = true;
+    });
+    btn('ECM', 'ecm', (v) => {
+      if (v) this.ecmQueued = true;
+    });
 
     root.appendChild(layer);
     this.touchLayer = layer;

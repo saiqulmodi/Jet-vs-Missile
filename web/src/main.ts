@@ -1,23 +1,24 @@
-// Jet vs Missile - web 3D, Phase 1. Game loop: fixed 60 Hz physics step + one render per display frame.
+// Jet vs Missile - web 3D. Game loop: fixed 60 Hz physics step + one render per display frame.
 import './style.css';
 import { Color, DirectionalLight, HemisphereLight, Quaternion, Scene, Vector3, WebGLRenderer } from 'three';
+import { RwrAudio } from './audio/RwrAudio';
 import { ChaseCamera } from './camera/ChaseCamera';
-import { JET_REJOIN_FRAMES, SAM_DAMAGE, SAM_FUSE_M, SAM_GUIDED_SHARE, SAM_SITE_COUNT_PHASE1, SAM_SPACING_M, STEP } from './config';
+import { JET_REJOIN_FRAMES, pxToX, pyToZ, SAM_DAMAGE, START_X_PX, START_Y_PX, STEP } from './config';
 import { Input } from './core/Input';
-import { Pool } from './core/Pool';
 import { JetModel } from './flight/JetModel';
 import { JetPhysics } from './flight/JetPhysics';
 import { Explosions } from './fx/Explosions';
 import { Smoke } from './fx/Smoke';
-import { Missile } from './threats/Missile';
-import { SamSite } from './threats/SamSite';
+import { ThreatSystem } from './threats/ThreatSystem';
 import { Hud } from './ui/Hud';
 import { Sky } from './world/Sky';
 import { Terrain, heightAt } from './world/Terrain';
 
 type State = 'start' | 'flying' | 'down';
 const MAX_STEPS = 5; // physics steps per display frame at most (after a stall, the game slows rather than spirals)
-const MISSILE_POOL = 8;
+const START_X = pxToX(START_X_PX); // main.py:1603 the lead jet starts here ...
+const START_Z = pyToZ(START_Y_PX);
+const START_HEADING = Math.PI / 2; // ... heading east (main.py:874 heading 0 = +x)
 
 // ---------- renderer + scene ----------
 const app = document.getElementById('app') as HTMLDivElement;
@@ -42,56 +43,21 @@ scene.add(terrain.mesh);
 const camera = new ChaseCamera(window.innerWidth / window.innerHeight);
 const input = new Input(app);
 const hud = new Hud(app);
+const rwr = new RwrAudio();
 const jet = new JetPhysics();
 const jetModel = new JetModel();
 scene.add(jetModel.group);
 const smoke = new Smoke();
 scene.add(smoke.mesh);
 const blasts = new Explosions(scene);
-const missiles = new Pool<Missile>(MISSILE_POOL, () => {
-  const m = new Missile();
-  scene.add(m.mesh);
-  return m;
-});
-
-// ---------- SAM batteries ----------
-let seed = (Date.now() & 0x7fffffff) | 1;
-function rand(): number {
-  // mulberry32
-  seed = (seed + 0x6d2b79f5) | 0;
-  let t = seed;
-  t = Math.imul(t ^ (t >>> 15), t | 1);
-  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-}
-
-const sites: SamSite[] = [];
-function placeSites(): void {
-  for (const s of sites) scene.remove(s.mesh);
-  sites.length = 0;
-  let tries = 0;
-  while (sites.length < SAM_SITE_COUNT_PHASE1 && tries++ < 4000) {
-    // most batteries ahead of the start (north = -Z), some all round
-    const ahead = sites.length < 10;
-    const x = (rand() * 2 - 1) * (ahead ? 9000 : 22000);
-    const z = ahead ? -6000 - rand() * 26000 : (rand() * 2 - 1) * 22000;
-    if (Math.hypot(x, z) < 5000) continue;
-    let ok = true;
-    for (const s of sites) if (Math.hypot(s.x - x, s.z - z) < SAM_SPACING_M) ok = false; // main.py:57
-    if (!ok) continue;
-    const y = heightAt(x, z);
-    if (y <= 0.5) continue; // not in the water
-    const s = new SamSite(sites.length, x, y, z);
-    s.reset(rand);
-    sites.push(s);
-    scene.add(s.mesh);
-  }
-}
+const threats = new ThreatSystem(scene);
+threats.onBlast = (x, y, z, r, life) => blasts.spawn(x, y, z, r, life);
 
 // ---------- state ----------
 let state: State = 'start';
 let downFrames = 0;
 let simTime = 0;
+let launchesSinceFrame = 0;
 const prevPos = new Vector3();
 const prevQuat = new Quaternion();
 const drawPos = new Vector3();
@@ -107,13 +73,13 @@ document.getElementById('start-btn')!.addEventListener('click', () => input.queu
 document.getElementById('restart-btn')!.addEventListener('click', () => input.queueStart());
 
 function resetWorld(): void {
-  jet.reset(0, 0, 0);
+  jet.reset(START_X, START_Z, START_HEADING);
   prevPos.copy(jet.pos);
   prevQuat.copy(jet.quat);
-  missiles.items.forEach((m) => m.hide());
+  threats.reset((Date.now() & 0x7fffffff) | 1);
   smoke.clear();
   blasts.clear();
-  placeSites();
+  hud.clearLog();
   wreckVisible = true;
   jetModel.group.visible = true;
   camera.snap(jet.pos, jet.quat);
@@ -150,11 +116,14 @@ let trailFrame = 0;
 function fixedStep(): void {
   input.update(STEP);
   const wantsStart = input.consumeStart();
+  const wantsFlare = input.consumeFlare();
+  const wantsEcm = input.consumeEcm();
   if (state === 'start') {
     if (wantsStart) startFlight();
     else {
       jet.step(STEP, null); // idles in level flight behind the menu
-      if (jet.pos.z < -30000) jet.reset(0, 0, 0);
+      if (jet.pos.x > START_X + 30000) jet.reset(START_X, START_Z, START_HEADING);
+      threats.step(null, false);
     }
     return;
   }
@@ -171,12 +140,13 @@ function fixedStep(): void {
 
   prevPos.copy(jet.pos);
   prevQuat.copy(jet.quat);
+  const flying = state === 'flying';
   if (wreckVisible) {
-    jet.step(STEP, state === 'flying' ? input : null);
+    jet.step(STEP, flying ? input : null);
     const ground = heightAt(jet.pos.x, jet.pos.z);
     if (jet.pos.y <= ground + 1.5) {
       jet.pos.y = ground + 1.5;
-      if (state === 'flying') jetDown('CRASHED INTO THE GROUND', true);
+      if (flying) jetDown('CRASHED INTO THE GROUND', true);
       else {
         blasts.spawn(jet.pos.x, jet.pos.y, jet.pos.z, 60, 2.2);
         wreckVisible = false;
@@ -186,39 +156,41 @@ function fixedStep(): void {
     if (jet.crashing && wreckVisible) smoke.emit(jet.pos.x, jet.pos.y, jet.pos.z, 4, 3, 14, 0.15);
   }
 
-  // batteries
-  const target = state === 'flying' ? jet.pos : null;
-  let airborne = missiles.countActive();
-  for (let i = 0; i < sites.length; i++) {
-    const s = sites[i];
-    if (s.step(target, airborne, rand)) {
-      const m = missiles.acquire();
-      if (m && target) {
-        m.launch(s.x, s.y + 12, s.z, target, jet.vel, rand() < SAM_GUIDED_SHARE); // main.py:77
-        airborne++;
-      }
+  // countermeasures (main.py:1955-1993 messages)
+  if (state === 'flying') {
+    const cm = threats.cm;
+    if (wantsFlare) {
+      if (cm.fireFlares(jet.pos, jet.vel)) hud.say('FLARES');
+      else hud.say(`FLARES RELOADING ${(cm.flareCd / 60).toFixed(1)} s`);
+    }
+    if (wantsEcm) {
+      const broken = cm.fireEcm(jet.pos, threats.missiles.items, threats.rand);
+      if (broken < 0) hud.say(`ECM RELOADING ${(cm.ecmCd / 60).toFixed(1)} s`);
+      else hud.say(broken ? `ECM - ${broken} LOCK BROKEN` : 'ECM');
     }
   }
 
-  // missiles
+  threats.step(state === 'flying' ? jet : null, state === 'flying');
+  launchesSinceFrame += threats.launchedThisFrame;
+  if (threats.decoyedThisFrame > 0) hud.say(`FLARES - ${threats.decoyedThisFrame} SAM DECOYED`); // main.py:1993
+  if (state === 'flying' && threats.hitThisFrame) {
+    // main.py:2312-2323 proximity fuse: one SAM hit = shot down
+    jet.hp = Math.max(0, jet.hp - SAM_DAMAGE);
+    if (jet.hp === 0) jetDown('SHOT DOWN BY A SAM', false);
+  }
+
+  // trails: missiles while the motor burns, flares while hot
   trailFrame++;
-  const items = missiles.items;
-  for (let i = 0; i < items.length; i++) {
-    const m = items[i];
-    if (!m.active) continue;
-    const end = m.step(state === 'flying' ? jet.pos : null, heightAt);
-    if (end !== 'none') {
-      blasts.spawn(m.pos.x, m.pos.y, m.pos.z, end === 'ground' ? 40 : 30, 1.2);
-      m.hide();
-      continue;
+  if (trailFrame % 2 === 0) {
+    const items = threats.missiles.items;
+    for (let i = 0; i < items.length; i++) {
+      const m = items[i];
+      if (m.active && m.motorOn) smoke.emit(m.pos.x, m.pos.y, m.pos.z, 6, 2, 9, m.trailGrey);
     }
-    if (trailFrame % 2 === 0 && m.motorOn) smoke.emit(m.pos.x, m.pos.y, m.pos.z, 6, 2, 9, m.trailGrey);
-    if (state === 'flying' && m.pos.distanceTo(jet.pos) < SAM_FUSE_M) {
-      // main.py:2312-2323 proximity fuse: one SAM hit = shot down
-      blasts.spawn(m.pos.x, m.pos.y, m.pos.z, 70, 1.6);
-      m.hide();
-      jet.hp = Math.max(0, jet.hp - SAM_DAMAGE);
-      if (jet.hp === 0) jetDown('SHOT DOWN BY A SAM', false);
+    const fl = threats.cm.flares.items;
+    for (let i = 0; i < fl.length; i++) {
+      const f = fl[i];
+      if (f.active && f.heat > 0.2 && trailFrame % 4 === 0) smoke.emit(f.pos.x, f.pos.y, f.pos.z, 2.5, 1.5, 5, 0.95);
     }
   }
 
@@ -258,13 +230,15 @@ function frame(now: number): void {
   jetModel.group.position.copy(drawPos);
   jetModel.group.quaternion.copy(drawQuat);
   jetModel.setFlame(jet.throttle, jet.afterburner, simTime);
-  for (const m of missiles.items) if (m.active) m.syncMesh();
+  threats.syncMeshes();
 
   camera.update(dt, drawPos, drawQuat, jet.afterburner);
   const cp = camera.camera.position;
   sky.update(cp.x, cp.y, cp.z);
   terrain.follow(drawPos.x, drawPos.z);
-  if (state !== 'start') hud.update(jet, heightAt(jet.pos.x, jet.pos.z), camera.camera, sites, missiles.items, window.innerWidth, window.innerHeight);
+  if (state !== 'start') hud.update(jet, heightAt(jet.pos.x, jet.pos.z), camera.camera, threats, window.innerWidth, window.innerHeight);
+  rwr.update(state === 'flying' ? threats.painting : 0, Hud.lockCount(threats), launchesSinceFrame, state === 'flying');
+  launchesSinceFrame = 0;
 
   renderer.render(scene, camera.camera);
 
@@ -282,10 +256,17 @@ window.addEventListener('resize', () => {
   camera.resize(window.innerWidth / window.innerHeight);
 });
 
-if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__jvm = {
-    scene, renderer, camera: camera.camera, jet, sites, missiles,
+if (import.meta.env.DEV)
+  (window as unknown as Record<string, unknown>).__jvm = {
+    scene,
+    renderer,
+    camera: camera.camera,
+    jet,
+    threats,
     /** dev only: run n physics frames now (tests in a throttled browser window) */
-    advance: (n: number) => { for (let i = 0; i < n; i++) fixedStep(); },
+    advance: (n: number) => {
+      for (let i = 0; i < n; i++) fixedStep();
+    },
     state: () => state,
   };
 
