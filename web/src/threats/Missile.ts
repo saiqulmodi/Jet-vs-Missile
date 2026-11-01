@@ -5,7 +5,7 @@
 //    (main.py:76) or when it is too slow to catch anything.
 //    Seeker: RADAR (battery missiles) is fooled by ECM and notching, IR (TEL missiles) by flares.
 //  - unguided: aimed where the jet will be (main.py:1072-1078), flies straight, then falls (main.py:1107-1112).
-import { CylinderGeometry, Group, Mesh, MeshBasicMaterial, MeshLambertMaterial, Quaternion, SphereGeometry, Vector3 } from 'three';
+import { AdditiveBlending, CylinderGeometry, Group, Mesh, MeshBasicMaterial, MeshLambertMaterial, Quaternion, SphereGeometry, Vector3 } from 'three';
 import {
   CRUISE_ALT_FT,
   DECOY_BLOW_FRAMES,
@@ -14,6 +14,7 @@ import {
   FT,
   GUIDED_SUSTAIN_FRAMES,
   JET_CRUISE_MPS,
+  LEVEL_MULT,
   NOTCH_BEAM_COS,
   NOTCH_BREAK_PER_S,
   NOTCH_DIVE_MPS,
@@ -37,16 +38,15 @@ const G0 = 9.81;
 /** Fins need air: the turn cap shrinks with air density, never below this share of main.py's value (new). */
 const MIN_TURN_SHARE = 0.25;
 const COAST_DRAG_K = 1.2e-4; // new: parasite drag after burnout, decel = k * (rho/rho0) * v^2 (37 m/s^2 at sea level, 554 m/s)
-const OUTTURN_RANGE_M = 800; // new: inside this, being out-turned for OUTTURN_FRAMES = overshoot
-const OUTTURN_FRAMES = 30;
+const OUTTURN_RANGE_M = 650; // new: inside this, being out-turned for OUTTURN_FRAMES = overshoot
+const OUTTURN_FRAMES = 45;
 const PASS_RANGE_M = 1500; // new: inside this, a missile whose range starts opening has flown past the jet (overshoot)
 const MAX_G = 25; // new: structural / fin limit at sea level, falls with air density (main.py's 2D turn cap allows 74 G)
 const INDUCED_SHARE = 0.15; // new: pulling at the turn limit costs 15% of the turn acceleration as drag
-const MIN_SPEED = 0.6 * JET_CRUISE_MPS; // new: slower than this it cannot catch a jet: self-destruct
+const MIN_SPEED = 0.6 * JET_CRUISE_MPS; // x LEVEL_MULT at use // new: slower than this it cannot catch a jet: self-destruct
 const ARM_FRAMES = 60; // new: fuse arms 1 s after launch (main.py:2294 arms it near the end of the climb)
 const COAST_DRAG = 0.996; // main.py:1111, unguided round loses forward speed every frame after burnout
 const FALL_MAX = 400; // m/s, terminal fall speed of a spent round (main.py:1109 caps its fall too)
-const NOTCH_PER_FRAME = 1 - Math.pow(1 - NOTCH_BREAK_PER_S, STEP);
 
 export type Seeker = 'RADAR' | 'IR' | 'NONE';
 export type MissileEnd = 'none' | 'expired' | 'ground' | 'decoy';
@@ -68,6 +68,12 @@ const irMat = new MeshLambertMaterial({ color: 0xf0e0c8 });
 const unguidedMat = new MeshLambertMaterial({ color: 0xc8c8a8 }); // main.py:1129 unguided
 const flameMat = new MeshBasicMaterial({ color: 0xffa040 });
 flameMat.color.multiplyScalar(4); // motor burn: blooms
+const glowGeo = new SphereGeometry(1.6, 10, 8);
+const glowMat = new MeshBasicMaterial({ color: 0xff9a40, transparent: true, opacity: 0.55, blending: AdditiveBlending, depthWrite: false });
+glowMat.color.multiplyScalar(3);
+/** the missile never shrinks below this many metres per 250 m of distance: it stays visible far away */
+const MIN_SIZE_PER_M = 1 / 250;
+const _cam = new Vector3();
 
 export class Missile implements Poolable {
   active = false;
@@ -79,6 +85,8 @@ export class Missile implements Poolable {
   readonly mesh = new Group();
   age = 0; // frames
   speed = 0;
+  /** this missile's full speed: main.py:1855 speed_factor x 2.2, fixed at launch */
+  topSpeed = SAM_SPEED_MPS;
   climbFrames = SAM_CLIMB_MIN_FRAMES;
   burnout = 0; // frame the motor stops
   /** the seeker has lost the jet for good (gimbal, notch) */
@@ -91,6 +99,8 @@ export class Missile implements Poolable {
   decoyFrames = 0;
   /** last flare salvo this missile was rolled against (each salvo gets one roll per missile) */
   flareSalvoTried = -1;
+  /** last chaff salvo this missile was rolled against */
+  chaffSalvoTried = -1;
   /** the launcher index that fired it */
   launcher = -1;
   /** latest lateral acceleration, m/s^2 (for tests / HUD) */
@@ -106,8 +116,10 @@ export class Missile implements Poolable {
     this.body = new Mesh(bodyGeo, radarMat);
     this.mesh.add(this.body);
     this.flame = new Mesh(flameGeo, flameMat);
-    this.flame.position.y = -3;
-    this.flame.scale.set(1, 2.2, 1);
+    this.flame.position.y = -3.2;
+    this.flame.scale.set(1.4, 3, 1.4);
+    const glow = new Mesh(glowGeo, glowMat); // a hot halo round the motor, so the missile reads from far off
+    this.flame.add(glow);
     this.mesh.add(this.flame);
     this.mesh.visible = false;
   }
@@ -137,7 +149,8 @@ export class Missile implements Poolable {
     this.body.material = !guided ? unguidedMat : seeker === 'IR' ? irMat : radarMat;
     this.pos.set(x, y + 3, z);
     this.age = 0;
-    this.speed = SAM_SPEED_MPS * SAM_BOOST_START;
+    this.topSpeed = SAM_SPEED_MPS * LEVEL_MULT;
+    this.speed = this.topSpeed * SAM_BOOST_START;
     // main.py:1069 boost/climb time scales with the target's altitude, at least 90 frames
     this.climbFrames = Math.max(SAM_CLIMB_MIN_FRAMES, (SAM_CLIMB_FRAMES * (target.y / FT)) / CRUISE_ALT_FT);
     this.burnout = this.climbFrames + GUIDED_SUSTAIN_FRAMES; // guided: boost + sustain, then coast
@@ -146,6 +159,7 @@ export class Missile implements Poolable {
     this.decoy = null;
     this.decoyFrames = 0;
     this.flareSalvoTried = -1;
+    this.chaffSalvoTried = -1;
     this.launcher = launcher;
     this.aLat = 0;
     this.saturated = 0;
@@ -171,7 +185,7 @@ export class Missile implements Poolable {
   /** main.py:1087-1095 frames the motor needs to fly `dist`: speed ramps 35% -> 100% over the climb, then holds. */
   private framesToCover(dist: number): number {
     const c = this.climbFrames;
-    const v = SAM_SPEED_MPS * STEP;
+    const v = this.topSpeed * STEP;
     const climbDist = v * (0.35 * c + (0.65 * c) / 2);
     if (dist >= climbDist) return c + (dist - climbDist) / v;
     const a = (0.65 * v) / (2 * c);
@@ -226,7 +240,7 @@ export class Missile implements Poolable {
           const hd = Math.hypot(hx, hz);
           const tv = Math.hypot(tgtVel.x, tgtVel.z);
           const radial = hd > 0 ? Math.abs(tgtVel.x * hx + tgtVel.z * hz) / hd : tv;
-          if (hd > NOTCH_MIN_RANGE_M && tv > 1 && tgtVel.y < -NOTCH_DIVE_MPS && radial < NOTCH_BEAM_COS * tv && rand() < NOTCH_PER_FRAME) {
+          if (hd > NOTCH_MIN_RANGE_M && tv > 1 && tgtVel.y < -NOTCH_DIVE_MPS && radial < NOTCH_BEAM_COS * tv && rand() < 1 - Math.pow(1 - NOTCH_BREAK_PER_S(), STEP)) {
             this.lockLost = true;
             this.lostBy = 'notch';
           }
@@ -259,7 +273,7 @@ export class Missile implements Poolable {
       if (this.decoy === null) {
         if (this.motorOn) {
           // boost and sustain: the motor holds the main.py speed profile (main.py:1106)
-          this.speed = SAM_SPEED_MPS * (SAM_BOOST_START + (1 - SAM_BOOST_START) * this.climbShare);
+          this.speed = this.topSpeed * (SAM_BOOST_START + (1 - SAM_BOOST_START) * this.climbShare);
           this.vel.addScaledVector(_acc, STEP);
           this.vel.y -= G0 * STEP;
           this.vel.setLength(this.speed);
@@ -273,7 +287,7 @@ export class Missile implements Poolable {
           this.vel.setLength(v);
           this.speed = v;
           this.flame.visible = false;
-          if (v < MIN_SPEED) return 'expired'; // out of energy
+          if (v < MIN_SPEED * LEVEL_MULT) return 'expired'; // out of energy
         }
         this.dir.copy(this.vel).divideScalar(Math.max(1e-3, this.speed));
       }
@@ -297,13 +311,16 @@ export class Missile implements Poolable {
       this.dir.copy(this.vel).divideScalar(Math.max(1e-3, this.speed));
       this.flame.visible = false;
     } else {
-      this.speed = SAM_SPEED_MPS * (SAM_BOOST_START + (1 - SAM_BOOST_START) * this.climbShare); // main.py:1106
+      this.speed = this.topSpeed * (SAM_BOOST_START + (1 - SAM_BOOST_START) * this.climbShare); // main.py:1106
       this.vel.copy(this.dir).multiplyScalar(this.speed);
     }
   }
 
-  syncMesh(): void {
+  /** Draw-side; with the camera position the missile keeps a minimum size on screen. */
+  syncMesh(cam?: Vector3): void {
     this.mesh.position.copy(this.pos);
+    const s = cam ? Math.min(60, Math.max(1.6, _cam.copy(cam).distanceTo(this.pos) * MIN_SIZE_PER_M)) : 1.6;
+    this.mesh.scale.setScalar(s);
     _q.setFromUnitVectors(_fwd, this.dir);
     this.mesh.quaternion.copy(_q);
   }

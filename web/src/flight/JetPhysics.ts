@@ -4,13 +4,13 @@
 //   The fly-by-wire stick commands load factor (G); hard turns raise CL, so induced drag bleeds speed
 //   unless you dive or light the afterburner. Too little speed for the lift asked = stall.
 import { Matrix4, Quaternion, Vector3 } from 'three';
-import { CRASH_SPIN, CRUISE_ALT_FT, FT, JET_CRUISE_MPS, JET_HP } from '../config';
+import { CRASH_SPIN, CRUISE_ALT_FT, FT, JET_CRUISE_MPS, JET_HP, LEVEL_MULT, PLAYER_EDGE } from '../config';
 import type { Input } from '../core/Input';
 
 const G0 = 9.81;
 const RHO0 = 1.225; // kg/m^3 at sea level
 const H_SCALE = 8500; // m, density scale height
-const MASS = 12000; // kg
+const MASS = 10000; // kg
 const WING_S = 38; // m^2
 const CD0 = 0.022;
 const K_IND = 0.12; // induced drag factor
@@ -21,17 +21,17 @@ const ALPHA_DEEP = 0.42; // rad (24 deg): where the wing goes when the jet is to
 const ALPHA_MIN = -0.2;
 const G_MAX = 9;
 const G_MIN = -3;
-const MIL_THRUST0 = 45000; // N at sea level, full military power
-const AB_THRUST0 = 60000; // N extra with afterburner
-const THRUST_LAPSE = 0.7; // thrust ~ (rho / rho0)^0.7
+const MIL_THRUST0 = 45000; // N at sea level, full military power (x PLAYER_EDGE at use)
+const AB_THRUST0 = 160000; // (x PLAYER_EDGE at use) N extra with afterburner: ~1 G of push at 35,000 ft, top ~Mach 2.3 (escape speed)
+const THRUST_LAPSE = 0.5; // thrust ~ (rho / rho0)^0.5
 const Q_REF = 20000; // Pa: full control authority at and above this dynamic pressure
-const PITCH_SLEW = 0.9; // rad/s alpha change at full authority
-const ROLL_RATE = 3.6; // rad/s at full authority
+const PITCH_SLEW = 0.9; // rad/s alpha change at full authority (x PLAYER_EDGE at use)
+const ROLL_RATE = 3.6; // rad/s at full authority (x PLAYER_EDGE at use)
 const YAW_RATE = 0.22; // rad/s velocity turn from the rudder at full authority
 const THROTTLE_RATE = 0.5; // per second
 
 /** Throttle that holds the main.py level 1 cruise speed in level flight at 35,000 ft. */
-const START_THROTTLE = 0.71;
+const START_THROTTLE = 0.49; // divided by PLAYER_EDGE at reset: the same 490 kt cruise with the stronger engine
 
 const _vhat = new Vector3();
 const _right = new Vector3();
@@ -63,19 +63,42 @@ export class JetPhysics {
   alive = true;
   /** true while a shot-down wreck is falling */
   crashing = false;
+  /** ft per frame the wreck is falling (main.py:1206) */
+  private crashFall = 20;
 
   reset(x: number, z: number, headingRad: number): void {
     this.pos.set(x, CRUISE_ALT_FT * FT, z); // start airborne at 35,000 ft (main.py:882)
-    this.vel.set(Math.sin(headingRad), 0, -Math.cos(headingRad)).multiplyScalar(JET_CRUISE_MPS);
+    this.vel.set(Math.sin(headingRad), 0, -Math.cos(headingRad)).multiplyScalar(JET_CRUISE_MPS * LEVEL_MULT); // main.py:190 the level's speed
     this.liftUp.set(0, 1, 0);
     this.alpha = 0.03;
-    this.throttle = START_THROTTLE;
+    this.throttle = START_THROTTLE / PLAYER_EDGE;
     this.afterburner = false;
     this.gLoad = 1;
     this.stalled = false;
     this.hp = JET_HP;
     this.alive = true;
     this.crashing = false;
+    this.crashFall = 20;
+    this.updateBody();
+  }
+
+  /** A shot-down wreck (main.py:1209-1216): keeps flying on, 0.5% slower a frame, spins, falls faster and faster. */
+  stepCrash(dt: number): void {
+    this.vel.x *= 0.995;
+    this.vel.z *= 0.995;
+    this.crashFall = Math.min(200, this.crashFall + 1.2); // main.py:1215
+    this.vel.y = -(this.crashFall * FT) / dt;
+    this.pos.x += this.vel.x * dt;
+    this.pos.z += this.vel.z * dt;
+    this.pos.y -= this.crashFall * FT;
+    const v = Math.max(1, this.vel.length());
+    _vhat.copy(this.vel).divideScalar(v);
+    this.liftUp.applyAxisAngle(_vhat, CRASH_SPIN); // main.py:1214
+    this.liftUp.addScaledVector(_vhat, -this.liftUp.dot(_vhat)).normalize();
+    this.alpha = 0;
+    this.afterburner = false;
+    this.throttle = 0;
+    this.gLoad = 0;
     this.updateBody();
   }
 
@@ -122,7 +145,7 @@ export class JetPhysics {
       const top = slow && pitchIn > 0.2 ? ALPHA_DEEP : ALPHA_LIMIT;
       alphaCmd = Math.min(top, Math.max(ALPHA_MIN, clReq / CL_ALPHA));
     }
-    const slew = PITCH_SLEW * Math.max(0.25, auth) * dt;
+    const slew = PITCH_SLEW * PLAYER_EDGE * Math.max(0.25, auth) * dt;
     this.alpha += Math.max(-slew, Math.min(slew, alphaCmd - this.alpha));
 
     const cl = liftCoefficient(this.alpha);
@@ -135,20 +158,20 @@ export class JetPhysics {
     // --- drag: parasite + induced + wave drag near Mach 1 + extra when stalled ---
     const a = speedOfSound(h);
     this.mach = v / a;
-    const wave = this.mach > 0.9 ? 0.022 * Math.min(1, (this.mach - 0.9) / 0.25) : 0;
+    const wave = this.mach > 0.9 ? 0.015 * Math.min(1, (this.mach - 0.9) / 0.25) : 0;
     let cd = CD0 + wave + K_IND * cl * cl;
     if (this.stalled) cd += 0.25 * (Math.abs(this.alpha) - ALPHA_STALL) * 4;
     const drag = cd * q * WING_S;
 
     // --- thrust ---
     const lapse = Math.pow(rho / RHO0, THRUST_LAPSE);
-    const thrust = (MIL_THRUST0 * (this.afterburner ? 1 : this.throttle) + (this.afterburner ? AB_THRUST0 : 0)) * lapse;
+    const thrust = (MIL_THRUST0 * (this.afterburner ? 1 : this.throttle) + (this.afterburner ? AB_THRUST0 : 0)) * lapse * PLAYER_EDGE * LEVEL_MULT * LEVEL_MULT; // level: drag grows with v^2, so thrust x m^2 = speeds x m
 
     // --- roll around the flight path, rudder yaws the flight path ---
     if (this.crashing) {
       this.liftUp.applyAxisAngle(_vhat, -CRASH_SPIN * 60 * dt); // main.py:72 wreck spin, per frame -> per second
     } else {
-      this.liftUp.applyAxisAngle(_vhat, rollIn * ROLL_RATE * Math.max(0.3, auth) * dt);
+      this.liftUp.applyAxisAngle(_vhat, rollIn * ROLL_RATE * PLAYER_EDGE * Math.max(0.3, auth) * dt);
     }
 
     _nose.copy(_vhat).multiplyScalar(Math.cos(this.alpha)).addScaledVector(this.liftUp, Math.sin(this.alpha));

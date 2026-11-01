@@ -1,6 +1,6 @@
 // Headless test: 50 guided SAM launches (half radar from batteries, half heat-seeking from TELs), each flown
 // from the same start by several pilots: one who does nothing, one who uses the right countermeasure
-// (flares vs heat seekers; notch + ECM vs radar; a hard break when it gets close), and three who use
+// (flares vs heat seekers; notch + chaff + ECM vs radar; a hard break when it gets close), and three who use
 // only one trick each (notch only, late break only, afterburner run only). Same code as the game.
 // Run: npm run test:sim
 import { Vector3 } from 'three';
@@ -11,6 +11,7 @@ import type { Launcher } from '../src/threats/Launchers';
 import type { Missile } from '../src/threats/Missile';
 import { makeRand, ThreatSystem } from '../src/threats/ThreatSystem';
 import { heightAt } from '../src/world/Terrain';
+import { Weapons } from '../src/weapons/Weapons';
 
 const TRIALS = 50;
 const MAX_FRAMES = 60 * 60;
@@ -40,8 +41,8 @@ function steerLift(j: JetPhysics, dir: Vector3, pull: number): void {
   inp.pitch = ang < 0.6 ? pull : 0.15;
 }
 
-type Pilot = 'passive' | 'countermeasures' | 'notch only' | 'late break only' | 'afterburner run only';
-type Cause = 'hit' | 'crashed' | 'flares' | 'ECM' | 'notch' | 'overshoot' | 'out of energy' | 'self-destruct' | 'ground';
+type Pilot = 'passive' | 'countermeasures' | 'notch only' | 'late break only' | 'afterburner run only' | 'AAM shoots it down';
+type Cause = 'hit' | 'crashed' | 'shot down' | 'flares' | 'chaff' | 'ECM' | 'notch' | 'overshoot' | 'out of energy' | 'self-destruct' | 'ground';
 
 function notch(jet: JetPhysics, m: Missile, pull: number): void {
   los.copy(m.pos).sub(jet.pos).normalize();
@@ -66,9 +67,11 @@ function fly(ts: ThreatSystem, l: Launcher, startPos: Vector3, heading: number, 
   Object.assign(inp, { pitch: 0, roll: 0, yaw: 0, throttle: 0, afterburner: false });
   const m = ts.launch(l, jet, true) as Missile;
   let breaking = false;
-  let lastDecoy: 'flares' | 'ECM' | '' = '';
+  let lastDecoy: 'flares' | 'chaff' | 'ECM' | '' = '';
   let lastLost: '' | 'gimbal' | 'notch' = '';
   let lastSpeed = 0;
+  shotDown = false;
+  weapons.reset();
   for (let f = 0; f < MAX_FRAMES; f++) {
     Object.assign(inp, { pitch: 0, roll: 0, yaw: 0, throttle: 0, afterburner: false });
     const tracking = m.active && m.tracking;
@@ -83,6 +86,7 @@ function fly(ts: ThreatSystem, l: Launcher, startPos: Vector3, heading: number, 
         if (d < 900 && m.climbShare > 0.5) ts.cm.fireFlares(jet.pos, jet.vel); // inside flare range (main.py:1988)
       } else {
         notch(jet, m, 0.8);
+        if (d < 1200 && m.climbShare > 0.5) ts.cm.fireChaff(jet.pos, jet.vel); // inside chaff range
         if (d < 1700) ts.cm.fireEcm(jet.pos, ts.missiles.items, ts.rand); // inside ECM range
       }
       if (breaking) lateBreak(jet, m);
@@ -90,6 +94,8 @@ function fly(ts: ThreatSystem, l: Launcher, startPos: Vector3, heading: number, 
       notch(jet, m, 0.8);
     } else if (pilot === 'late break only' && tracking && breaking) {
       lateBreak(jet, m);
+    } else if (pilot === 'AAM shoots it down' && tracking) {
+      if (d < 4500 && weapons.missileCd === 0) weapons.fireMissile('AAM', jet.pos, jet.vel);
     } else if (pilot === 'afterburner run only' && tracking) {
       // turn tail on the missile and run on afterburner, diving gently
       los.copy(jet.pos).sub(m.pos);
@@ -104,16 +110,18 @@ function fly(ts: ThreatSystem, l: Launcher, startPos: Vector3, heading: number, 
     }
     jet.step(STEP, asInput);
     if (m.active) {
-      lastDecoy = m.decoy === null ? '' : m.decoy === m.falseTrack ? 'ECM' : 'flares';
+      lastDecoy = m.decoy === null ? '' : m.decoy === m.falseTrack ? 'ECM' : m.seeker === 'RADAR' ? 'chaff' : 'flares';
       lastLost = m.lostBy;
       lastSpeed = m.speed;
     }
     const wasActive = m.active;
     const age = m.age;
     ts.step(jet, false);
+    weapons.step();
     if (ts.hitThisFrame) return 'hit';
     if (jet.pos.y < heightAt(jet.pos.x, jet.pos.z)) return 'crashed';
     if (wasActive && !m.active) {
+      if (shotDown) return 'shot down';
       if (lastDecoy) return lastDecoy;
       if (lastLost === 'notch') return 'notch';
       if (lastLost === 'gimbal') return 'overshoot';
@@ -125,10 +133,19 @@ function fly(ts: ThreatSystem, l: Launcher, startPos: Vector3, heading: number, 
 }
 
 const ts = new ThreatSystem(null, 1);
+let shotDown = false;
+const weapons = new Weapons(null, ts, {
+  say: (text) => {
+    if (text === 'MISSILE SHOT DOWN') shotDown = true;
+  },
+  blast: () => {},
+  sound: () => {},
+  smoke: () => {},
+});
 const radars = ts.launchers.filter((l) => l.kind === 'SAM');
 const tels = ts.launchers.filter((l) => l.kind === 'TEL');
 const rand = makeRand(77);
-const pilots: Pilot[] = ['passive', 'countermeasures', 'notch only', 'late break only', 'afterburner run only'];
+const pilots: Pilot[] = ['passive', 'countermeasures', 'notch only', 'late break only', 'afterburner run only', 'AAM shoots it down'];
 type Tally = Record<string, number>;
 const res: Record<Pilot, { RADAR: Tally; IR: Tally }> = {} as never;
 for (const p of pilots) res[p] = { RADAR: {}, IR: {} };

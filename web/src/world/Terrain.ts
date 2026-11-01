@@ -1,31 +1,63 @@
 // Terrain: one grid mesh that follows the jet; heights from Height.ts (main.py's map). Inside the map the ground
-// shows main.py's painted tiles (MapTexture); beyond it, plain procedural colour. Night: the ground darkened to
+// shows main.py's painted tiles (MapTexture); beyond it, their mirror image (the country carries on to the horizon). Night: the ground darkened to
 // moonlight (main.py:39 NIGHT_SHADE) with every main.py light added on top (main.py:2413-2415).
 import { BufferAttribute, BufferGeometry, Color, Mesh, ShaderMaterial, type Texture, UniformsLib, UniformsUtils, Vector3 } from 'three';
 import { PX_M, WORLD_H_PX, WORLD_W_PX } from '../config';
 import { heightAt, noise } from './Height';
 
+/** the drawn terrain surface at (x, z): the grid's triangles between heightAt samples (things laid on it, e.g.
+ * runways, follow exactly what is drawn, not the smoother heightAt between grid points) */
+export function surfaceY(x: number, z: number): number {
+  const gx = x / CELL;
+  const gz = z / CELL;
+  const c = Math.floor(gx);
+  const r = Math.floor(gz);
+  const fx = gx - c;
+  const fz = gz - r;
+  const a = heightAt(c * CELL, r * CELL);
+  const b = heightAt((c + 1) * CELL, r * CELL);
+  const d = heightAt(c * CELL, (r + 1) * CELL);
+  if (fx + fz <= 1) return a + (b - a) * fx + (d - a) * fz;
+  const e = heightAt((c + 1) * CELL, (r + 1) * CELL);
+  return e + (d - e) * (1 - fx) + (b - e) * (1 - fz);
+}
+
 export { heightAt } from './Height';
 
 const SIZE = 90000; // m, side of the terrain mesh
-const SEG = 384; // grid cells per side (234 m)
-const CELL = SIZE / SEG;
+let SEG = 384; // grid cells per side (234 m); 256 on phones
+let CELL = SIZE / SEG;
+/** grid detail, set before the terrain is built (phones get a lighter grid) */
+export function setTerrainDetail(seg: number): void {
+  SEG = seg;
+  CELL = SIZE / SEG;
+}
 const RECENTER = SIZE / 8; // rebuild once the jet is this far from the centre
 const ROWS_PER_FRAME = 24;
 
 const vertexShader = /* glsl */ `
+  #include <common>
   attribute vec3 color;
   varying vec3 vColor;
   varying vec3 vNormal;
   varying vec2 vWorld;
+  varying float vViewZ;
+  varying float vWorldY;
   #include <fog_pars_vertex>
+  #include <shadowmap_pars_vertex>
   void main() {
     vColor = color;
     vNormal = normal;
     vec4 world = modelMatrix * vec4(position, 1.0);
     vWorld = world.xz;
+    vWorldY = world.y;
     vec4 mvPosition = viewMatrix * world;
+    vViewZ = -mvPosition.z;
     gl_Position = projectionMatrix * mvPosition;
+    // sun shadow coordinates (cascades, fx/Shadows.ts)
+    vec4 worldPosition = world;
+    vec3 transformedNormal = normalMatrix * normal;
+    #include <shadowmap_vertex>
     #include <fog_vertex>
   }`;
 
@@ -41,22 +73,102 @@ const fragmentShader = /* glsl */ `
   varying vec3 vColor;
   varying vec3 vNormal;
   varying vec2 vWorld;
+  varying float vViewZ;
+  varying float vWorldY;
+  uniform vec2 CSM_cascades[3];
+  uniform float cameraNear;
+  uniform float shadowFar;
+  #include <common>
+  #include <packing>
   #include <fog_pars_fragment>
+  #include <shadowmap_pars_fragment>
+  /** sun shadow from the cascade this fragment's view depth falls in (1 = lit) */
+  float sunShadow() {
+    float s = 1.0;
+    #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
+      float ld = vViewZ / (shadowFar - cameraNear);
+      DirectionalLightShadow dls;
+      #pragma unroll_loop_start
+      for (int i = 0; i < NUM_DIR_LIGHT_SHADOWS; i++) {
+        dls = directionalLightShadows[ i ];
+        if (ld >= CSM_cascades[ i ].x && ld < CSM_cascades[ i ].y)
+          s = getShadow(directionalShadowMap[ i ], dls.shadowMapSize, dls.shadowIntensity, dls.shadowBias, dls.shadowRadius, vDirectionalShadowCoord[ i ]);
+      }
+      #pragma unroll_loop_end
+    #endif
+    return s;
+  }
   float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  // ---- procedural detail (no texture downloads): value noise, fbm, and its slope for bump normals ----
+  float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash(i), b = hash(i + vec2(1.0, 0.0)), c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  }
+  float fbm3(vec2 p) {
+    return vnoise(p) * 0.55 + vnoise(p * 2.07 + 13.1) * 0.3 + vnoise(p * 4.13 - 7.7) * 0.15;
+  }
+  /** gradient of fbm3 at p (finite differences), for detail normals */
+  vec2 fbmSlope(vec2 p, float e) {
+    float c = fbm3(p);
+    return vec2(fbm3(p + vec2(e, 0.0)) - c, fbm3(p + vec2(0.0, e)) - c) / e;
+  }
   void main() {
     vec2 uv = vWorld / uMapSize + 0.5;
     vec3 albedo = vColor;
     float inMap = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
-    if (uv.x < 0.0) albedo = vec3(0.0048, 0.0159, 0.0782); // the ocean goes on (main.py 14,34,78)
     vec3 lights = vec3(0.0);
-    if (inMap > 0.5) {
-      albedo = texture2D(uDay, uv).rgb;
-      lights = texture2D(uNight, uv).rgb;
+    if (uv.x < 0.0) {
+      albedo = vec3(0.0048, 0.0159, 0.0782); // the ocean goes on (main.py 14,34,78)
+    } else {
+      // inside the map: main.py's painted tiles; beyond it the same tiles mirrored (matches Height.ts mirror())
+      vec2 uvm = 1.0 - abs(mod(uv, 2.0) - 1.0);
+      albedo = texture2D(uDay, uvm).rgb;
+      lights = texture2D(uNight, uvm).rgb * mix(0.5, 1.0, inMap);
     }
-    // a little ground texture up close
-    albedo *= 0.94 + 0.12 * hash(floor(vWorld / 30.0));
     vec3 n = normalize(vNormal);
-    vec3 light = uSunColor * max(dot(n, uSunDir), 0.0) + mix(uGroundLight, uSkyLight, n.y * 0.5 + 0.5);
+    float h = vWorldY;
+    float land = step(1.5, h);
+    // distance fades: micro detail only near the camera (no shimmer or tiling seen from altitude), macro always
+    float nearFade = 1.0 - smoothstep(250.0, 3500.0, vViewZ);
+    float midFade = 1.0 - smoothstep(2000.0, 16000.0, vViewZ);
+    // macro variation over km: breaks up big flat colour areas seen from 35,000 ft
+    float macro = fbm3(vWorld / 2600.0);
+    albedo *= mix(1.0, 0.86 + 0.28 * macro, land);
+    // splat weights: grass where the ground is green, dirt where it is brown/sand, rock on steep or high ground,
+    // snow above the snow line on the flatter faces (noisy edge)
+    float green = clamp((albedo.g - max(albedo.r, albedo.b)) * 12.0, 0.0, 1.0);
+    float slope = 1.0 - n.y;
+    float mountain = smoothstep(650.0, 1100.0, h);
+    float rockW = clamp(smoothstep(0.1, 0.28, slope) * smoothstep(300.0, 700.0, h) + smoothstep(1500.0, 2100.0, h), 0.0, 1.0) * land;
+    float snowLine = 2650.0 + (fbm3(vWorld / 900.0) - 0.5) * 600.0;
+    float snowW = smoothstep(snowLine - 120.0, snowLine + 120.0, h) * smoothstep(0.08, 0.22, n.y - 0.6 + 0.3) * land;
+    // micro detail: grass tufts / dirt patches (8 m and 1.5 m), mid detail 60 m
+    float micro = fbm3(vWorld / 7.0) * 0.6 + vnoise(vWorld / 1.6) * 0.4;
+    float mid = fbm3(vWorld / 60.0);
+    vec3 grassTint = mix(vec3(0.62, 0.72, 0.45), vec3(1.18, 1.12, 0.88), micro);
+    vec3 dirtTint = mix(vec3(0.85, 0.8, 0.72), vec3(1.1, 1.04, 0.95), micro);
+    vec3 tint = mix(dirtTint, grassTint, green);
+    albedo *= mix(vec3(1.0), tint, nearFade * land);
+    albedo *= mix(1.0, 0.9 + 0.2 * mid, midFade * land);
+    // dirt patches in grassland (worn fields), fading in near the camera
+    float patchN = smoothstep(0.62, 0.75, fbm3(vWorld / 35.0)) * green * midFade;
+    albedo = mix(albedo, albedo * vec3(1.35, 1.0, 0.7), patchN * 0.5 * land);
+    // mountains: stratified rock (bands along the height + noise) replaces the painted faceted faces
+    float strata = (0.5 + 0.5 * sin(h / 37.0 + fbm3(vWorld / 210.0) * 9.0)) * 0.5 + fbm3(vWorld / 45.0) * 0.5;
+    vec3 rock = mix(vec3(0.075, 0.068, 0.058), vec3(0.16, 0.15, 0.135), strata * 0.6 + micro * 0.4 * nearFade + mid * 0.3);
+    albedo = mix(albedo, rock, rockW * max(mountain, smoothstep(0.18, 0.35, slope)));
+    vec3 snow = vec3(0.5, 0.53, 0.58) * (0.9 + 0.1 * micro);
+    albedo = mix(albedo, snow, snowW);
+    // detail normals: soft bumps on grass/dirt, cliff faces on rock (fade with distance)
+    vec2 g1 = fbmSlope(vWorld / 9.0, 0.35) / 9.0;
+    vec2 g2 = fbmSlope(vWorld / 120.0, 0.35) / 120.0;
+    float bump = (0.6 + 2.5 * rockW) * nearFade;
+    float cliff = (12.0 + 40.0 * rockW) * midFade;
+    n = normalize(n + vec3(-g1.x, 0.0, -g1.y) * bump * 3.0 + vec3(-g2.x, 0.0, -g2.y) * cliff * land);
+    vec3 light = uSunColor * max(dot(n, uSunDir), 0.0) * sunShadow() + mix(uGroundLight, uSkyLight, n.y * 0.5 + 0.5);
     vec3 col = albedo * light + lights * uNightMix * 1.8;
     gl_FragColor = vec4(col, 1.0);
     #include <tonemapping_fragment>
@@ -117,8 +229,10 @@ export class Terrain {
       vertexShader,
       fragmentShader,
       fog: true,
+      lights: true, // receives the cascaded sun shadows
       uniforms: UniformsUtils.merge([
         UniformsLib.fog,
+        UniformsLib.lights,
         {
           uDay: { value: null },
           uNight: { value: null },
@@ -135,6 +249,7 @@ export class Terrain {
     this.material.uniforms.uNight.value = night;
     this.mesh = new Mesh(this.geo, this.material);
     this.mesh.frustumCulled = false;
+    this.mesh.receiveShadow = true;
     this.buildNow(0, 0);
   }
 

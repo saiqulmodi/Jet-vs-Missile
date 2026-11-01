@@ -11,6 +11,7 @@ import {
   DRONE_TURN_DIV,
   FT,
   JET_CRUISE_MPS,
+  LEVEL_MULT,
   PX_M,
   pxToX,
   pyToZ,
@@ -20,6 +21,7 @@ import {
   WORLD_W_PX,
 } from '../config';
 import type { CityPx } from './Launchers';
+import { MAP } from '../world/MapData';
 
 const SPEED_MPS = DRONE_SPEED_VS_JET * JET_CRUISE_MPS; // main.py:2209, = 126 m/s
 const SPEED_PX = SPEED_MPS / (PX_M * 60 * TIME_SCALE); // back to main.py px/frame for the turn rule
@@ -42,6 +44,8 @@ export class Drone {
   heading = Math.PI; // main.py:1014 (west), radians clockwise from north here: 0 = north (-z)
   spotCd = 0;
   alive = true;
+  /** frames until a shot-down drone's replacement crosses the border (main.py:2223-2227) */
+  respawn = 0;
   private wp = new Float64Array(6); // 3 waypoints (x, z)
   private wpCount = 0;
 
@@ -73,8 +77,23 @@ export class Drone {
     this.heading = -Math.PI / 2; // main.py:1014 heading pi = west
     this.spotCd = Math.floor(rand() * DRONE_SPOT_RELOAD); // main.py:1017
     this.alive = true;
+    this.respawn = 0;
+    this.mesh.visible = true;
     this.wpCount = 0;
     void cities;
+  }
+
+  /** main.py:1005-1007: reinforcements cross the front line from the east */
+  respawnFromBorder(rand: () => number): void {
+    const py = 600 + rand() * (WORLD_H_PX - 1200);
+    this.x = pxToX(MAP.borderX(py) + 120);
+    this.z = pyToZ(py);
+    this.y = (DRONE_ALT_MIN_FT + rand() * (DRONE_ALT_MAX_FT - DRONE_ALT_MIN_FT)) * FT;
+    this.heading = -Math.PI / 2;
+    this.spotCd = Math.floor(rand() * DRONE_SPOT_RELOAD);
+    this.wpCount = 0;
+    this.alive = true;
+    this.mesh.visible = true;
   }
 
   private newWaypoint(rand: () => number, cities: CityPx[], k: number): void {
@@ -110,9 +129,10 @@ export class Drone {
     const want = Math.atan2(wx - this.x, -(wz - this.z));
     let d = want - this.heading;
     d = ((d + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
-    this.heading += Math.max(-TURN_PER_FRAME, Math.min(TURN_PER_FRAME, d));
-    this.x += Math.sin(this.heading) * SPEED_MPS * STEP;
-    this.z -= Math.cos(this.heading) * SPEED_MPS * STEP;
+    const m = LEVEL_MULT; // main.py:2209 drone speed = level speed x 0.5; turn = speed / 30 (main.py:1034)
+    this.heading += Math.max(-TURN_PER_FRAME * m, Math.min(TURN_PER_FRAME * m, d));
+    this.x += Math.sin(this.heading) * SPEED_MPS * m * STEP;
+    this.z -= Math.cos(this.heading) * SPEED_MPS * m * STEP;
     if (this.spotCd > 0) this.spotCd--;
   }
 

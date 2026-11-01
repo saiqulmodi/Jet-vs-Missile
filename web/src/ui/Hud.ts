@@ -3,9 +3,12 @@
 // advice line, red flashing border, ECM ring, message log (main.py:1704), and screen markers for launchers,
 // drones and missiles. DOM text is only rewritten when it changes; nothing is created per frame.
 import { type PerspectiveCamera, Vector3 } from 'three';
-import { ALT_MIN_FT, ECM_RELOAD, FLARE_RELOAD, FT, JET_HP, ROCKET_WARN_COS, ROCKET_WARN_RANGE_M } from '../config';
+import { ALT_MIN_FT, CHAFF_RELOAD, ECM_RELOAD, FLARE_RELOAD, FT, JET_HP, ROCKET_WARN_COS, ROCKET_WARN_RANGE_M } from '../config';
 import type { JetPhysics } from '../flight/JetPhysics';
 import type { ThreatSystem } from '../threats/ThreatSystem';
+import type { Weapons } from '../weapons/Weapons';
+
+const BOMB_MARKS = 6;
 
 const MS_TO_KT = 1.943844;
 const MARK_LAUNCHERS = 24;
@@ -19,6 +22,7 @@ const MSG_FRAMES = 180; // main.py:1705
 const _p = new Vector3();
 const _rel = new Vector3();
 const _vrel = new Vector3();
+const _p2 = new Vector3();
 
 function el(parent: HTMLElement, cls: string, text = ''): HTMLDivElement {
   const d = document.createElement('div');
@@ -52,7 +56,10 @@ export class Hud {
   private hpFill: HTMLDivElement;
   private flareFill: HTMLDivElement;
   private flareText: Text;
+  private chaffFill: HTMLDivElement;
+  private chaffText: Text;
   private ecmFill: HTMLDivElement;
+  private bombMarks: HTMLDivElement[] = [];
   private ecmText: Text;
   private warn: Text;
   private warnNode: HTMLDivElement;
@@ -74,6 +81,9 @@ export class Hud {
   // nearest launchers this frame (fixed arrays, no allocation)
   private nearIdx = new Int32Array(MARK_LAUNCHERS);
   private nearD = new Float64Array(MARK_LAUNCHERS);
+  private tag!: Text;
+  private p2Node!: HTMLDivElement;
+  private p2Text!: Text;
   private lastHp = -1;
   private tick = 0;
 
@@ -92,6 +102,7 @@ export class Hud {
     this.agl = new Text(el(right, 'hud-small'));
     const top = el(r, 'hud-top');
     this.hdg = new Text(el(top, 'hud-hdg'));
+    this.tag = new Text(el(top, 'hud-small hud-tag')); // main.py:2531 [callsign] + level
     const hp = el(top, 'hud-hp');
     const bar = el(hp, 'hud-hp-bar');
     this.hpFill = el(bar, 'hud-hp-fill');
@@ -107,12 +118,16 @@ export class Hud {
       return [fill, new Text(el(row, 'hud-cm-state'))];
     };
     [this.flareFill, this.flareText] = cmRow('FLARES', 'flare'); // main.py:2536-2540 reload bars
+    [this.chaffFill, this.chaffText] = cmRow('CHAFF', 'chaff');
     [this.ecmFill, this.ecmText] = cmRow('ECM', 'ecm');
     this.warnNode = el(r, 'hud-warn');
     this.warn = new Text(this.warnNode);
     this.adviceNode = el(r, 'hud-advice');
     this.advice = new Text(this.adviceNode);
     this.caution = new Text(el(r, 'hud-caution'));
+    this.p2Node = el(r, 'mark mark-p2'); // main.py:2572-2583 player 2's pick
+    this.p2Node.style.display = 'none';
+    this.p2Text = new Text(this.p2Node);
     const log = el(r, 'hud-log');
     for (let i = 0; i < MSG_LINES; i++) {
       this.msgNodes.push(new Text(el(log, 'hud-log-line')));
@@ -132,6 +147,11 @@ export class Hud {
       this.launcherMarks.push(m);
       this.launcherText.push(new Text(m));
     }
+    for (let i = 0; i < BOMB_MARKS; i++) {
+      const m = el(r, 'mark mark-bomb'); // main.py:1326-1329 impact marker
+      m.style.display = 'none';
+      this.bombMarks.push(m);
+    }
     for (let i = 0; i < MARK_DRONES; i++) {
       const m = el(r, 'mark mark-drone', 'UAV');
       m.style.display = 'none';
@@ -143,6 +163,20 @@ export class Hud {
       this.missileMarks.push(m);
       this.missileText.push(new Text(m));
     }
+  }
+
+  setTag(s: string): void {
+    this.tag.set(s);
+  }
+
+  /** player 2's picked launcher: bracket and its state (main.py:2572-2583) */
+  p2Mark(l: { x: number; y: number; z: number } | null, text: string, cam: PerspectiveCamera, w: number, h: number): void {
+    if (!l) {
+      this.p2Node.style.display = 'none';
+      return;
+    }
+    _p2.set(l.x, l.y + 10, l.z);
+    if (this.place(this.p2Node, _p2, cam, w, h)) this.p2Text.set(text);
   }
 
   show(on: boolean): void {
@@ -175,7 +209,7 @@ export class Hud {
     return n;
   }
 
-  update(jet: JetPhysics, groundM: number, cam: PerspectiveCamera, ts: ThreatSystem, w: number, h: number): void {
+  update(jet: JetPhysics, groundM: number, cam: PerspectiveCamera, ts: ThreatSystem, weapons: Weapons, w: number, h: number): void {
     this.tick++;
     const slow = this.tick % 4 === 0; // numbers at 15 Hz, markers and arrows every frame
     const v = jet.speed;
@@ -187,11 +221,14 @@ export class Hud {
       this.agl.set(`AGL ${Math.round(Math.max(0, jet.pos.y - groundM) / FT).toLocaleString('en-US')} FT`);
       this.hdg.set(`HDG ${String(Math.round(jet.headingDeg) % 360).padStart(3, '0')}`);
       this.g.set(`${jet.gLoad.toFixed(1)} G`);
-      this.thr.set(jet.afterburner ? 'THR AB' : `THR ${Math.round(jet.throttle * 100)}%`);
+      this.thr.set(`${jet.afterburner ? 'THR AB' : `THR ${Math.round(jet.throttle * 100)}%`}   AAM ${weapons.aamLeft}`);
       const cm = ts.cm;
-      this.flareFill.style.width = `${(100 * (1 - cm.flareCd / FLARE_RELOAD)).toFixed(0)}%`;
+      this.flareFill.style.width = `${(100 * (1 - cm.flareCd / FLARE_RELOAD())).toFixed(0)}%`;
       this.flareText.set(cm.flareCd === 0 ? 'READY' : `${(cm.flareCd / 60).toFixed(1)} s`);
-      this.ecmFill.style.width = `${(100 * (1 - cm.ecmCd / ECM_RELOAD)).toFixed(0)}%`;
+      this.chaffFill.style.width = `${(100 * (1 - cm.chaffCd / CHAFF_RELOAD())).toFixed(0)}%`;
+      this.chaffText.set(cm.chaffCd === 0 ? 'READY' : `${(cm.chaffCd / 60).toFixed(1)} s`);
+      this.chaffFill.classList.toggle('ready', cm.chaffCd === 0);
+      this.ecmFill.style.width = `${(100 * (1 - cm.ecmCd / ECM_RELOAD())).toFixed(0)}%`;
       this.ecmText.set(cm.ecmCd === 0 ? 'READY' : `${(cm.ecmCd / 60).toFixed(1)} s`);
       this.flareFill.classList.toggle('ready', cm.flareCd === 0);
       this.ecmFill.classList.toggle('ready', cm.ecmCd === 0);
@@ -219,6 +256,7 @@ export class Hud {
     let nearest = -1;
     let nd = Infinity;
     const jb = Math.atan2(jet.vel.x, -jet.vel.z);
+    const samT = weapons.samTarget(jet.pos); // the missile Z would shoot down
     for (let i = 0; i < items.length; i++) {
       const m = items[i];
       const arrow = this.arrows[i];
@@ -258,8 +296,9 @@ export class Hud {
       if (!threat) arrow.style.display = 'none';
       if (!jet.alive || !m.active || !this.place(mark, m.pos, cam, w, h)) {
         mark.style.display = 'none';
-      } else if (slow) {
-        this.missileText[i].set(`${(m.pos.distanceTo(jet.pos) / 1000).toFixed(1)}`);
+      } else {
+        mark.classList.toggle('target', m === samT);
+        if (slow) this.missileText[i].set(`${(m.pos.distanceTo(jet.pos) / 1000).toFixed(1)}`);
       }
     }
 
@@ -276,10 +315,12 @@ export class Hud {
         const cm = ts.cm;
         let adv: string;
         if (radar + ir === 0) adv = 'UNGUIDED - TURN HARD OUT OF ITS PATH';
-        else if (ir > 0 && cm.flareCd === 0) adv = 'PRESS C (PAD Y)  -  FLARES';
-        else if (radar > 0 && cm.ecmCd === 0) adv = 'PRESS X (PAD LB)  -  ECM JAMMER   |   NOTCH: FLY 90 DEG ACROSS IT AND DIVE';
+        else if (ir > 0 && cm.flareCd === 0) adv = 'PRESS C (\u25B3)  -  FLARES';
+        else if (radar > 0 && cm.chaffCd === 0) adv = 'PRESS K (D-PAD \u2191)  -  CHAFF   |   X (L1)  -  ECM   |   NOTCH: FLY 90 DEG ACROSS IT AND DIVE';
+        else if (radar > 0 && cm.ecmCd === 0) adv = 'PRESS X (L1)  -  ECM JAMMER   |   NOTCH: FLY 90 DEG ACROSS IT AND DIVE';
         else if (radar > 0) adv = 'NOTCH: FLY 90 DEG ACROSS IT AND DIVE, THEN BREAK HARD LATE';
         else adv = `FLARES RELOADING ${(cm.flareCd / 60).toFixed(1)} s - BREAK HARD LATE`;
+        if (samT && weapons.missileCd === 0 && weapons.aamLeft > 0) adv += '   |   Z (\u25A1)  -  SHOOT IT DOWN';
         this.advice.set(adv);
       }
       this.warnNode.style.visibility = flash || nd < 3000 ? 'visible' : 'hidden';
@@ -325,6 +366,8 @@ export class Hud {
       this.nearD[k] = d;
       this.nearIdx[k] = i;
     }
+    const agm = weapons.agmTarget(jet.pos);
+    const aam = weapons.aamTarget(jet.pos);
     for (let i = 0; i < n; i++) {
       const m = this.launcherMarks[i];
       if (i >= count) {
@@ -336,6 +379,7 @@ export class Hud {
       if (!this.place(m, _p, cam, w, h)) continue;
       m.classList.toggle('tel', l.kind === 'TEL');
       m.classList.toggle('in-range', this.nearD[i] < l.range);
+      m.classList.toggle('target', l === agm); // what G (AGM) would go for
       if (slow) this.launcherText[i].set(l.kind);
     }
     for (let i = 0; i < this.droneMarks.length; i++) {
@@ -346,8 +390,18 @@ export class Hud {
         continue;
       }
       _p.set(d.x, d.y, d.z);
-      if (_p.distanceTo(jet.pos) > DRONE_MARK_RANGE || !this.place(m, _p, cam, w, h)) m.style.display = 'none';
+      if (!d.alive || _p.distanceTo(jet.pos) > DRONE_MARK_RANGE || !this.place(m, _p, cam, w, h)) m.style.display = 'none';
+      else m.classList.toggle('target', d === aam); // what Z (AAM) would go for
     }
+    // falling bombs: where each will land (main.py:1326-1329)
+    let b = 0;
+    const ord = weapons.items.items;
+    for (let i = 0; i < ord.length && b < BOMB_MARKS; i++) {
+      const o = ord[i];
+      if (!o.active || o.kind !== 'BOMB') continue;
+      if (this.place(this.bombMarks[b], o.impact, cam, w, h)) b++;
+    }
+    for (; b < BOMB_MARKS; b++) this.bombMarks[b].style.display = 'none';
   }
 
   private place(m: HTMLDivElement, world: Vector3, cam: PerspectiveCamera, w: number, h: number): boolean {

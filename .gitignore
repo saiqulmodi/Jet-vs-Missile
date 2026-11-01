@@ -6,3 +6,5 @@ build/
 dist/
 bin/
 .buildozer/
+web/tests/.out/
+web/tools/.out/

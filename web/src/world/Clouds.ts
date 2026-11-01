@@ -14,7 +14,7 @@ import {
 } from 'three';
 import { FT, PX_M, pxToX, pyToZ, WORLD_H_PX as H, WORLD_W_PX as W } from '../config';
 
-const CLOUD_COUNT = 110; // main.py:176
+const CLOUD_COUNT = 20; // main.py:176 has 110; cut to 20 at the user's request (31-Oct)
 const WIND_PX = [0.3, -0.1]; // main.py:97
 const DRIFT_MPS = new Vector2(WIND_PX[0] * 0.25 * PX_M * 60, WIND_PX[1] * 0.25 * PX_M * 60); // main.py:1390, 18 m/s east
 const MAX_PUFFS_PER_CELL = 8;
@@ -52,8 +52,8 @@ export class Clouds {
         const ccy = U(size * 1.6, h - size * 1.6);
         const n = Math.min(MAX_PUFFS_PER_CELL, Math.floor(size * 2.2) + 6);
         for (let k = 0; k < n; k++) {
-          const dx = gauss(size * 0.5);
-          const dy = gauss(size * 0.4);
+          const dx = gauss(size * 0.3); // packed tighter than main.py's 0.5 / 0.4: one soft cloud, not scattered balls
+          const dy = gauss(size * 0.25);
           const d = Math.hypot(dx / size, dy / size);
           if (d > 1.6) continue; // main.py:1374 no stray specks
           const rad = Math.max(6, size * U(0.4, 0.8) * Math.max(0.4, 1 - d * 0.45));
@@ -98,6 +98,7 @@ export class Clouds {
         varying vec2 vUv;
         varying float vShade;
         varying float vNear;
+        varying float vFar;
         #include <fog_pars_vertex>
         void main() {
           vec3 c = iOffset;
@@ -107,7 +108,8 @@ export class Clouds {
           mvPosition.xy += position.xy * iSize;
           vUv = position.xy;
           vShade = iShade;
-          vNear = smoothstep(40.0, 400.0, -mvPosition.z); // fade puffs right in front of the camera
+          vNear = smoothstep(300.0, 1500.0, -mvPosition.z); // clouds never block the view: puffs within ~1.5 km of the camera fade out (user: clear viewing)
+          vFar = 1.0 - smoothstep(6000.0, 14000.0, -mvPosition.z); // and far away: about one cloud in view (main.py:176)
           gl_Position = projectionMatrix * mvPosition;
           #include <fog_vertex>
         }`,
@@ -118,11 +120,15 @@ export class Clouds {
         varying vec2 vUv;
         varying float vShade;
         varying float vNear;
+        varying float vFar;
         #include <fog_pars_fragment>
         void main() {
-          float r2 = dot(vUv, vUv);
+          // break the round edge with a little noise so puffs do not read as discs
+          float ang = atan(vUv.y, vUv.x);
+          float wob = 0.18 * sin(ang * 5.0 + vShade * 7.0) + 0.12 * sin(ang * 9.0 - vShade * 3.0);
+          float r2 = dot(vUv, vUv) * (1.0 + wob);
           if (r2 > 1.0) discard;
-          float a = pow(1.0 - r2, 1.8) * 0.45 * vNear; // main.py:1349 dense middle, fading edge
+          float a = pow(1.0 - r2, 2.6) * 0.28 * vNear * vFar; // soft edges // main.py:1349 dense middle, fading edge
           vec3 col = mix(uShade, uLit, vShade);
           col *= mix(vec3(1.0), vec3(0.07, 0.08, 0.13), uNight); // main.py:1386 moonlit blue-grey
           gl_FragColor = vec4(col, a);

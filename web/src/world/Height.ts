@@ -1,7 +1,7 @@
 // Ground height from main.py's map: the western sea (main.py:483, 612-626), the northern mountain range
 // (main.py:345-362, 561-574), rivers in their valleys (main.py:364-383, 592-610), the south-eastern desert
 // (main.py:487) and rolling farmland elsewhere. Precomputed once into a 16 px (64 m) grid; outside the map the
-// sea continues to the west and plain country to the north, east and south.
+// sea continues to the west and the map's mirror image to the north, east and south.
 import { coastX, PX_M, WORLD_H_PX as H, WORLD_W_PX as W } from '../config';
 import { isDesert, isHighland, MAP } from './MapData';
 
@@ -144,17 +144,18 @@ export function heightAt(x: number, z: number): number {
   const py = z / PX_M + H / 2;
   if (px < 0) return SEA; // the ocean goes on to the west
   if (px > W || py < 0 || py > H) {
-    // plain country beyond the map, blending in over 2 km
-    const edge = Math.max(px - W, -py, py - H) * PX_M;
-    const out = plains(x, z);
-    if (edge > 2000) return out;
-    const cx = Math.min(W, Math.max(0, px));
-    const cy = Math.min(H, Math.max(0, py));
-    const inside = sample(cx, cy);
-    const t = edge / 2000;
-    return inside + (out - inside) * t;
+    // Beyond the map the country carries on as its mirror image (north: the mountain range continues instead of
+    // ending in a wall; east / south: farmland, frontier and desert), so the ground meets the horizon naturally.
+    // The terrain shader mirrors the map colours the same way.
+    return sample(mirror(px, W), mirror(py, H));
   }
   return sample(px, py);
+}
+
+/** triangle-wave mirror of v into 0..size (0..size stays, size..2 size flips back, -size..0 flips) */
+function mirror(v: number, size: number): number {
+  const m = ((v % (2 * size)) + 2 * size) % (2 * size);
+  return m <= size ? m : 2 * size - m;
 }
 
 function sample(px: number, py: number): number {

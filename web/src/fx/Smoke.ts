@@ -36,6 +36,11 @@ export class Smoke {
   }
 
   emit(x: number, y: number, z: number, life: number, size0: number, size1: number, grey: number): void {
+    this.emitRGB(x, y, z, life, size0, size1, grey, grey, grey * 0.98);
+  }
+
+  /** a coloured puff (display smoke) */
+  emitRGB(x: number, y: number, z: number, life: number, size0: number, size1: number, r: number, g: number, b: number): void {
     const p = this.pool.acquireOrRecycle();
     p.pos.set(x, y, z);
     p.age = 0;
@@ -43,7 +48,7 @@ export class Smoke {
     p.size0 = size0;
     p.size1 = size1;
     const i = p.index;
-    this.mesh.setColorAt(i, this.tmpColor.setRGB(grey, grey, grey * 0.98));
+    this.mesh.setColorAt(i, this.tmpColor.setRGB(r, g, b));
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
   }
 

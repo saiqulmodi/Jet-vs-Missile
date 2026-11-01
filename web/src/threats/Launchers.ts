@@ -141,6 +141,7 @@ export class LauncherMeshes {
   private beaconRed: InstancedMesh;
   private beaconGreen: InstancedMesh;
   private greenOn: boolean[] = [];
+  private samUp: boolean[] = [];
   private sams: Launcher[];
   private tels: Launcher[];
 
@@ -230,6 +231,28 @@ export class LauncherMeshes {
 
   /** Radar faces turn (main.py:847); hidden TELs show only while seen. */
   update(frame: number, force = false): void {
+    // a destroyed battery loses its dome and canisters; the pad stays, burning (main.py:831-837)
+    let samDirty = false;
+    for (let i = 0; i < this.sams.length; i++) {
+      const s = this.sams[i];
+      const up = s.hp > 0;
+      if (this.samUp[i] === up) continue;
+      this.samUp[i] = up;
+      samDirty = true;
+      const k = up ? 1 : 0;
+      this.put(this.domes, i, s.x - 10 * Math.cos(s.phase), s.y + 1.2, s.z + 10 * Math.sin(s.phase), 0, k);
+      for (let c = 0; c < 4; c++) {
+        const ox = 4 + (c % 2) * 6;
+        const oz = -5 + Math.floor(c / 2) * 8;
+        const cs = Math.cos(s.phase);
+        const sn = Math.sin(s.phase);
+        this.put(this.cans, i * 4 + c, s.x + ox * cs + oz * sn, s.y + 5, s.z - ox * sn + oz * cs, s.phase, k);
+      }
+    }
+    if (samDirty) {
+      this.domes.instanceMatrix.needsUpdate = true;
+      this.cans.instanceMatrix.needsUpdate = true;
+    }
     for (let i = 0; i < this.sams.length; i++) {
       const s = this.sams[i];
       const dx = s.x - 10 * Math.cos(s.phase);
@@ -241,7 +264,7 @@ export class LauncherMeshes {
     let dirty = force;
     for (let i = 0; i < this.tels.length; i++) {
       const t = this.tels[i];
-      const show = t.visible;
+      const show = t.visible && t.hp > 0; // a destroyed TEL is a burning wreck
       if (show === this.telShown[i] && !force) continue;
       this.telShown[i] = show;
       dirty = true;

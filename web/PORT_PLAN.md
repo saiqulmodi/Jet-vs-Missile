@@ -110,6 +110,7 @@ Pad: stick fly, R2/L2 climb/dive, A bomb, B AGM, X AAM, Y flares, LB/RB jet, Bac
 Touch: stick + BOMB, AGM, AAM, FLARE, SAM, AERO, CLIMB, DIVE.
 
 ## Phases (stop after each, wait for "go")
+Status 31-Oct-2026: phases 1-6 built; phase 6 publishing (GitHub Pages / Stratos box) waits for the owner's go.
 1. **Done** - first playable: scaffold, energy-model flight, terrain, chase camera, SAM batteries, HUD, pooling.
 2. **Threats + countermeasures**: proportional-navigation guided SAMs (boost, burnout, coast with drag and gravity), unguided
    rounds, full roster at main.py stats (50 SAM batteries, 150 TELs with camouflage/reveal/low-level spotting, 12 drones that
@@ -122,7 +123,46 @@ Touch: stick + BOMB, AGM, AAM, FLARE, SAM, AERO, CLIMB, DIVE.
    3 airbases, forests, villages, front line, artillery, convoys), 110 clouds, atmosphere shader, contrails, day/night (T) with
    every main.py light, post-processing.
 4. **Sound**: main.py's 6 synthesised sounds + engine, missile and blast sounds (actions only, no music).
-5. **Squadron + weapons**: 10 jets in 4 flights, jet switching, bombs, AGM, AAM (drones can be shot down, respawn), destroying
-   launchers, crash + ejection, aerobatics + display smoke, manual SAM (M), levels 1-100, 2-player launcher mode, minimap,
+5. **Squadron + weapons** (bombs, AGM, AAM, chaff, ejection and the new-jet arrival were brought forward on 31-Oct): 10 jets in 4 flights, jet switching, bombs, AGM, AAM (drones can be shot down, respawn), destroying
+   launchers, crash + ejection, aerobatics + display smoke, manual SAM (M), levels 1-100, 2-player launcher mode (PLAYER_EDGE
+   1.15 applies only vs the computer: two players get equal chances), minimap,
    message log, helicopters.
 6. **Ship**: PWA (offline, install), GitHub Pages / Stratos box, size + performance pass on phones.
+   Built: manifest + service worker + emblem icons (public/), Stratos analytics per GAME_ANALYTICS_RULE.md
+   (level_start at take-off, game_over with seconds when the jet you fly goes down), phones start lighter and an
+   FPS guard lowers pixels then bloom. Total build ~1 MB. Not published: that needs the owner's go.
+
+## Visual upgrade (owner's pasted spec, 31-Oct-2026; one phase at a time, wait for "go")
+1. **Done** - PBR jet: MeshStandardMaterial alloy skin (metalness 0.7, roughness 0.42) with a procedural panel-line /
+   rivet / vent normal + roughness map (drawn once, shared), glossy MeshPhysicalMaterial canopy (roughness 0.05),
+   titanium nozzle with heat-glowing lip and turbine face, HDR plume shader (white-blue core, orange body, red tip,
+   shock diamonds on afterburner) instead of the flat orange cone; ACES filmic tone mapping (exposure 1.15) + sRGB
+   output; sky environment map (fx/Environment.ts, PMREM) for reflections, dimmed at night.
+2. **Done** - Sky dome with Rayleigh + Mie scattering over an exponential atmosphere (deepens to indigo with
+   altitude, pale horizon, reddened low sun, sun disk + glare; night navy sky with stars and moon kept); fog takes
+   the model's horizon colour. Cascaded sun shadows (three CSM, 3 cascades 0-75 m / 75-720 m / 720 m-6 km,
+   2048 px, 1024 on phones; all lit materials take part, terrain samples them in its own shader; solid lit meshes
+   are marked as casters every 30 frames). Exponential height fog replaces three's fog chunks (haze thickest near
+   the ground, plus the old distance fade so the terrain edge melts away). FPS guard step 3 = shadows off.
+3. **Done** - Terrain shader: procedural splat (grass / dirt from the map colour, rock on steep or high ground with
+   stratified bands, snow above ~2,650 m on flatter faces), micro (1.5-8 m) and mid (60 m) detail fading with
+   distance, km-scale macro variation against flat areas, detail bump + cliff normals. world/Runways.ts: textured
+   runway at each airbase (asphalt, seams, edge lines, piano keys, 09/27, centre line, touchdown + aiming blocks,
+   skid marks), taxiway, apron, edge / threshold / end lights (dim by day, bloom at night), laid on surfaceY().
+4. **Done** - GTAO ambient occlusion (desktop only; solid surfaces only), speed pass after bloom: radial motion
+   blur toward the edges and speed lines growing with Mach and afterburner. FPS guard: pixels, AO, bloom, shadows.
+5. **Done** - Elevons (roll + pitch), rudder (yaw), all-moving tailplane halves on hinges, following the stick;
+   wingtip vapour ribbons above 4.5 G; heat shimmer behind the nozzle (screen-space, in the speed pass).
+   Jets stay code-built (no GLTF download).
+6. **Done** - Intro play circle replaced by a pulsing HUD reticle (pitch ladder, flight-path marker; still no
+   words). Minimap kept (whole map, all its marks) and restyled: lit bezel, grid, range rings + sweep round your
+   jet, red chevrons (drones, orange missiles) and blue wedges (squadron). The 3 airbases show as enlarged runway symbols
+   (a real runway is ~5 x 0.2 px at minimap scale; 1-Nov owner: "no clear runway on the map"). New shield icons from
+   tools/make_icons.py (public/icons) and the inline favicon; service worker cache v2 so installs update.
+7. **Done (01-Nov, user: "improve it")** - No more board edge: beyond the map the country is the map's mirror image
+   (heights in Height.ts mirror(), colours in the terrain shader), so the mountain range carries on instead of ending
+   in a cliff and the ground reaches the horizon; the western ocean is unchanged. Clouds fade out within ~1.5 km of
+   the camera, so they never block the view (user: clear viewing). Jet: one streamlined lathe fuselage (ogive nose,
+   widest at the wing root, taper to the nozzle, flattened section) + dorsal spine instead of cylinder + cone; paint
+   metalness 0.22 / 0.25 (was 0.7) so the squadron colours read as paint, not chrome. Sim test PASS.
+8. **Done (01-Nov, user: name/logo "special, appealing, no write-up")** - New emblem (src/ui/Logo.ts emblemSvg, no words): polished-steel fighter climbing out of a sunset over the curve of the earth, twin burners lit, missile on a sweeping smoke trail, flares fanned like wings, red lock-on brackets, bevelled metal rim. Intro animation kept (same classes). App icons rendered from the same vector by tools/make_icons.mjs (headless Chrome: 192 / 512 any, 512 maskable on night sky at 80 %, 180 Apple); favicon = icons/icon-192.png; service-worker cache v3.

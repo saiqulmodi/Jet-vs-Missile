@@ -56,6 +56,9 @@ export class ThreatSystem {
 
   // ---- what happened this frame (read by the game: HUD, sound, damage) ----
   hitThisFrame = false;
+  /** what hit the jet last: seeker, and the launcher that fired it (for the debrief caption) */
+  lastHitSeeker = '';
+  lastHitLauncher = '';
   launchedThisFrame = 0;
   decoyedThisFrame = 0;
   /** launchers that have the jet inside their ring right now (radar search tone) */
@@ -111,7 +114,8 @@ export class ThreatSystem {
     return n;
   }
 
-  private nearestArmed(x: number, z: number, maxDist: number): Launcher | null {
+  /** main.py:1839-1846 the nearest armed launcher within maxDist */
+  nearestArmed(x: number, z: number, maxDist: number): Launcher | null {
     let best: Launcher | null = null;
     let bd = maxDist * maxDist;
     for (let i = 0; i < this.launchers.length; i++) {
@@ -148,6 +152,10 @@ export class ThreatSystem {
     let airborne = this.airborne();
     for (let i = 0; i < this.drones.length; i++) {
       const d = this.drones[i];
+      if (!d.alive) {
+        if (d.respawn > 0 && --d.respawn === 0) d.respawnFromBorder(rand); // main.py:2223-2227
+        continue;
+      }
       d.step(rand, this.cities);
       if (!engage || !jet || d.spotCd > 0) continue;
       if (Math.hypot(jet.pos.x - d.x, jet.pos.z - d.z) >= DRONE_SPOT_RANGE_M || airborne >= AUTO_SAM_CAP) continue;
@@ -191,6 +199,8 @@ export class ThreatSystem {
       // proximity fuse (main.py:2311-2315); a decoyed missile no longer looks at the jet (main.py:2288-2293)
       if (jet && m.decoy === null && m.armed && m.pos.distanceTo(jet.pos) < SAM_FUSE_M) {
         if (this.onBlast) this.onBlast(m.pos.x, m.pos.y, m.pos.z, 70, 1.6);
+        this.lastHitSeeker = m.seeker;
+        this.lastHitLauncher = this.launchers[m.launcher]?.name ?? '';
         m.hide();
         this.hitThisFrame = true;
       }
@@ -198,14 +208,14 @@ export class ThreatSystem {
   }
 
   /** draw-side update (radar faces, hidden TELs, drones) */
-  syncMeshes(night = false): void {
+  syncMeshes(night = false, cam?: Vector3): void {
     if (this.meshes) {
       this.meshes.update(this.frame);
       this.meshes.setNight(night, this.frame);
     }
     for (let i = 0; i < this.drones.length; i++) this.drones[i].syncMesh();
     const items = this.missiles.items;
-    for (let i = 0; i < items.length; i++) if (items[i].active) items[i].syncMesh();
+    for (let i = 0; i < items.length; i++) if (items[i].active) items[i].syncMesh(cam);
   }
 }
 

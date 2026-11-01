@@ -1,9 +1,81 @@
-// Keyboard + Gamepad API + on-screen touch stick, merged into one set of flight controls.
+// Keyboard + Gamepad API (PS5 DualSense, Xbox, ...) + on-screen touch controls, merged into flight controls and
+// one-press actions. In 2-player mode (main.py:2003-2025) player 2 has the arrow keys or the second controller
+// (main.py:2136 "in 2-player mode the arrow keys belong to player 2"; main.py:1785-1787 the second pad).
 
 const STICK_RADIUS = 80; // main.py:150, touch stick radius in px
 const STICK_DEADZONE = 0.18; // main.py:151
 const PAD_DEADZONE = 0.15; // analog flight needs a smaller dead zone than main.py's d-pad style 0.35 (main.py:114)
 const KEY_RAMP = 4; // keyboard pitch/roll/yaw move toward full deflection at this rate per second
+
+export type Action =
+  | 'start'
+  | 'flare'
+  | 'ecm'
+  | 'night'
+  | 'chaff'
+  | 'bomb'
+  | 'agm'
+  | 'aam'
+  | 'aero'
+  | 'sam'
+  | 'nextJet'
+  | 'prevJet'
+  | 'levelUp'
+  | 'levelDown'
+  | 'twoPlayers'
+  | 'p2Left'
+  | 'p2Right'
+  | 'p2Guided'
+  | 'p2Unguided';
+
+const ACTIONS: Action[] = [
+  'start', 'flare', 'ecm', 'night', 'chaff', 'bomb', 'agm', 'aam', 'aero', 'sam', 'nextJet', 'prevJet',
+  'levelUp', 'levelDown', 'twoPlayers', 'p2Left', 'p2Right', 'p2Guided', 'p2Unguided',
+];
+
+/** keyboard: one-press actions (main.py's keys where they are free here) */
+const KEY_ACTIONS: Record<string, Action> = {
+  Enter: 'start',
+  NumpadEnter: 'start',
+  KeyC: 'flare', // main.py:1973
+  KeyX: 'ecm', // ECM gets its own key here (main.py shares C)
+  KeyT: 'night', // main.py:2001
+  KeyK: 'chaff', // chaff (radar decoy), new
+  KeyB: 'bomb', // main.py SPACE (the afterburner here)
+  KeyG: 'agm', // main.py R (throttle up here)
+  KeyZ: 'aam', // main.py F (throttle down here)
+  KeyV: 'aero', // main.py:1950
+  KeyM: 'sam', // main.py:1994
+  KeyN: 'levelUp', // main.py:2026
+  KeyP: 'levelDown', // main.py:2028
+  Digit2: 'twoPlayers', // main.py:2003
+};
+/** player 2 on the arrow keys, only in 2-player mode (main.py:2007-2025) */
+const P2_KEYS: Record<string, Action> = { ArrowLeft: 'p2Left', ArrowRight: 'p2Right', ArrowUp: 'p2Guided', ArrowDown: 'p2Unguided' };
+
+/** first controller: buttons for one-press actions (standard browser layout; PS5 names in brackets) */
+const PAD1_ACTIONS: [Action, number][] = [
+  ['start', 9], // Options
+  ['start', 0], // Cross (on menus)
+  ['flare', 3], // Triangle (main.py:132)
+  ['ecm', 4], // L1
+  ['night', 17], // touchpad (main.py:126)
+  ['chaff', 12], // d-pad up
+  ['bomb', 13], // d-pad down
+  ['agm', 1], // Circle (main.py:130)
+  ['aam', 2], // Square (main.py:131)
+  ['aero', 10], // L3 (main.py:137)
+  ['nextJet', 11], // R3
+  ['levelUp', 9], // Options (main.py:136)
+  ['levelDown', 8], // Create (main.py:135)
+];
+/** second controller = player 2 in 2-player mode (main.py:144 P2_PAD_KEYS) */
+const PAD2_ACTIONS: [Action, number][] = [
+  ['p2Left', 14],
+  ['p2Right', 15],
+  ['p2Guided', 0],
+  ['p2Unguided', 1],
+];
 
 const PREVENT = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab']);
 
@@ -26,20 +98,17 @@ export class Input {
   afterburner = false;
   /** true when the controls in use are a touch screen */
   touchMode = false;
+  /** 2-player mode: the arrows and the second controller belong to player 2 */
+  twoPlayers = false;
 
   private keys = new Set<string>();
   private kPitch = 0;
   private kRoll = 0;
   private kYaw = 0;
-  private startQueued = false;
-  private flareQueued = false;
-  private ecmQueued = false;
-  private padFlareWasDown = false;
-  private padEcmWasDown = false;
-  private nightQueued = false;
-  private padNightWasDown = false;
+  private queued = new Map<Action, boolean>();
+  private pad1Was: boolean[] = [];
+  private pad2Was: boolean[] = [];
   private padConnected = false;
-  private padStartWasDown = false;
 
   // touch state
   private stickId = -1;
@@ -55,12 +124,15 @@ export class Input {
   private touchLayer!: HTMLDivElement;
 
   constructor(root: HTMLElement) {
+    for (const a of ACTIONS) this.queued.set(a, false);
     window.addEventListener('keydown', (e) => {
       if (PREVENT.has(e.code)) e.preventDefault();
-      if (!e.repeat && (e.code === 'Enter' || e.code === 'NumpadEnter')) this.startQueued = true;
-      if (!e.repeat && e.code === 'KeyC') this.flareQueued = true; // main.py:1973 C = flares
-      if (!e.repeat && e.code === 'KeyX') this.ecmQueued = true; // ECM gets its own key here (main.py shares C)
-      if (!e.repeat && e.code === 'KeyT') this.nightQueued = true; // main.py:2001 T = day / night
+      if (!e.repeat) {
+        if (e.code === 'Tab') this.queue(e.shiftKey ? 'prevJet' : 'nextJet'); // main.py:1936
+        const a = KEY_ACTIONS[e.code];
+        if (a) this.queue(a);
+        if (this.twoPlayers && P2_KEYS[e.code]) this.queue(P2_KEYS[e.code]);
+      }
       this.keys.add(e.code);
       this.touchMode = false;
       this.showTouch(false);
@@ -80,40 +152,67 @@ export class Input {
     }
   }
 
-  /** Enter / gamepad A or Start / a tap on a start or restart button. */
+  queue(a: Action): void {
+    this.queued.set(a, true);
+  }
+
+  /** Enter / pad Cross or Options / a tap on the play icon. */
   queueStart(): void {
-    this.startQueued = true;
+    this.queue('start');
   }
 
-  consumeFlare(): boolean {
-    const s = this.flareQueued;
-    this.flareQueued = false;
-    return s;
-  }
-
-  consumeEcm(): boolean {
-    const s = this.ecmQueued;
-    this.ecmQueued = false;
-    return s;
-  }
-
-  consumeNight(): boolean {
-    const s = this.nightQueued;
-    this.nightQueued = false;
+  /** true once per press */
+  consume(a: Action): boolean {
+    const s = this.queued.get(a) === true;
+    if (s) this.queued.set(a, false);
     return s;
   }
 
   consumeStart(): boolean {
-    const s = this.startQueued;
-    this.startQueued = false;
-    return s;
+    return this.consume('start');
+  }
+  consumeFlare(): boolean {
+    return this.consume('flare');
+  }
+  consumeEcm(): boolean {
+    return this.consume('ecm');
+  }
+  consumeNight(): boolean {
+    return this.consume('night');
+  }
+
+  /**
+   * Controller rumble (PS5 DualSense, Xbox and other pads with vibration motors in the browser).
+   * strong = the big low motor, weak = the small high one, both 0..1. Player 1's controller only.
+   */
+  rumble(strong: number, weak: number, ms: number): void {
+    if (!this.padConnected) return;
+    const pads = navigator.getGamepads();
+    for (let i = 0; i < pads.length; i++) {
+      const p = pads[i];
+      if (!p || !p.connected) continue;
+      const act = (p as Gamepad & { vibrationActuator?: { playEffect?: (t: string, o: object) => Promise<unknown> } }).vibrationActuator;
+      if (act && act.playEffect) void act.playEffect('dual-rumble', { duration: ms, strongMagnitude: strong, weakMagnitude: weak }).catch(() => undefined);
+      break;
+    }
+  }
+
+  private padEdges(p: Gamepad, table: [Action, number][], was: boolean[]): void {
+    const b = p.buttons;
+    for (let i = 0; i < table.length; i++) {
+      const [a, idx] = table[i];
+      const down = !!(b[idx] && b[idx].pressed);
+      if (down && !was[i]) this.queue(a);
+      was[i] = down;
+    }
   }
 
   /** Read every device once per physics step. */
   update(dt: number): void {
     const k = this.keys;
-    const tp = (k.has('KeyS') || k.has('ArrowDown') ? 1 : 0) - (k.has('KeyW') || k.has('ArrowUp') ? 1 : 0);
-    const tr = (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0);
+    const arrows = !this.twoPlayers; // in 2-player mode the arrows belong to player 2 (main.py:2136)
+    const tp = (k.has('KeyS') || (arrows && k.has('ArrowDown')) ? 1 : 0) - (k.has('KeyW') || (arrows && k.has('ArrowUp')) ? 1 : 0);
+    const tr = (k.has('KeyD') || (arrows && k.has('ArrowRight')) ? 1 : 0) - (k.has('KeyA') || (arrows && k.has('ArrowLeft')) ? 1 : 0);
     const ty = (k.has('KeyE') ? 1 : 0) - (k.has('KeyQ') ? 1 : 0);
     this.kPitch = ramp(this.kPitch, tp, KEY_RAMP * dt);
     this.kRoll = ramp(this.kRoll, tr, KEY_RAMP * dt);
@@ -127,9 +226,16 @@ export class Input {
 
     if (this.padConnected) {
       const pads = navigator.getGamepads();
+      let n = 0;
       for (let i = 0; i < pads.length; i++) {
         const p = pads[i];
         if (!p || !p.connected) continue;
+        if (n === 1) {
+          // the second controller: player 2's launchers, in 2-player mode
+          if (this.twoPlayers) this.padEdges(p, PAD2_ACTIONS, this.pad2Was);
+          break;
+        }
+        n++;
         const ax = p.axes;
         const lx = dead(ax[0] ?? 0, PAD_DEADZONE);
         const ly = dead(ax[1] ?? 0, PAD_DEADZONE);
@@ -142,24 +248,12 @@ export class Input {
           this.showTouch(false);
         }
         const b = p.buttons;
-        const rt = b[7] ? b[7].value : 0;
-        const lt = b[6] ? b[6].value : 0;
+        const rt = b[7] ? b[7].value : 0; // R2
+        const lt = b[6] ? b[6].value : 0; // L2
         if (rt > 0.1) thr += rt;
         if (lt > 0.1) thr -= lt;
-        if ((b[0] && b[0].pressed) || (b[5] && b[5].pressed)) ab = true; // A or RB
-        const startDown = !!((b[9] && b[9].pressed) || (b[0] && b[0].pressed));
-        if (startDown && !this.padStartWasDown) this.startQueued = true;
-        this.padStartWasDown = startDown;
-        const flareDown = !!(b[3] && b[3].pressed); // Y = flares (main.py:132)
-        if (flareDown && !this.padFlareWasDown) this.flareQueued = true;
-        this.padFlareWasDown = flareDown;
-        const ecmDown = !!(b[4] && b[4].pressed); // LB = ECM
-        if (ecmDown && !this.padEcmWasDown) this.ecmQueued = true;
-        this.padEcmWasDown = ecmDown;
-        const nightDown = !!(b[17] && b[17].pressed); // touchpad click (main.py:126)
-        if (nightDown && !this.padNightWasDown) this.nightQueued = true;
-        this.padNightWasDown = nightDown;
-        break;
+        if ((b[0] && b[0].pressed) || (b[5] && b[5].pressed)) ab = true; // Cross or R1
+        this.padEdges(p, PAD1_ACTIONS, this.pad1Was);
       }
     }
 
@@ -242,18 +336,25 @@ export class Input {
       b.addEventListener('pointercancel', off);
       layer.appendChild(b);
     };
+    const tap = (label: string, cls: string, a: Action): void =>
+      btn(label, cls, (v) => {
+        if (v) this.queue(a);
+      });
     btn('THR +', 'thr-up', (v) => (this.touchThrUp = v));
     btn('THR -', 'thr-down', (v) => (this.touchThrDown = v));
     btn('AB', 'ab', (v) => (this.touchAb = v));
-    btn('FLARE', 'flare', (v) => {
-      if (v) this.flareQueued = true;
-    });
-    btn('ECM', 'ecm', (v) => {
-      if (v) this.ecmQueued = true;
-    });
-    btn('NIGHT', 'night', (v) => {
-      if (v) this.nightQueued = true;
-    });
+    tap('FLARE', 'flare', 'flare');
+    tap('ECM', 'ecm', 'ecm');
+    tap('CHAFF', 'chaff', 'chaff');
+    tap('BOMB', 'bomb', 'bomb');
+    tap('AGM', 'agm', 'agm');
+    tap('AAM', 'aam', 'aam');
+    tap('NIGHT', 'night', 'night');
+    tap('AERO', 'aero', 'aero'); // main.py:158
+    tap('SAM', 'sam', 'sam'); // main.py:157
+    tap('JET', 'jet', 'nextJet');
+    tap('LV+', 'lvup', 'levelUp');
+    tap('LV-', 'lvdown', 'levelDown');
 
     root.appendChild(layer);
     this.touchLayer = layer;
