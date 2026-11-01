@@ -251,3 +251,4 @@ Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2
 - Browser build: `docs/` (pygbag 0.9.3). The Stratos Games portal box is `games/saiqulmodi/` in
   `Stratos-Technologies-fzco/stratos-games-site` (clone `~/OneDrive/Desktop/stratos-games-site`);
   `tools/make_stratos_box.py` rebuilds it from `docs/` with the engine bundled. Only ever commit that folder there.
+- **Live web version = the 3D port** (01-Nov-2026, user: push the latest): `web/` built with `npm run build`, `web/dist/` copied into `docs/` (GitHub Pages) and into the Stratos box `games/saiqulmodi/` (box keeps its game.json + thumbnail). The pygbag web build (docs index.html, .tar.gz, .apk) was removed from docs/ and the box; the pygame `main.py` game itself is unchanged in this repo.
