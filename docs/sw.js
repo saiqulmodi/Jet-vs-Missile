@@ -1,6 +1,6 @@
 // Offline play: the game is cached the first time it loads, then it opens without a network.
 // Cache-first for the game's own files; a new version replaces the old cache.
-const CACHE = 'jet-vs-missile-v3'; // v3: world to the horizon, streamlined jet, new emblem + icons (01-Nov)
+const CACHE = 'jet-vs-missile-v6'; // v6: war goal, coaching, results panel + Stratos Coins (16-Nov); v3: world to the horizon, streamlined jet, new emblem + icons (01-Nov)
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['./', './index.html', './manifest.webmanifest'])).then(() => self.skipWaiting()));

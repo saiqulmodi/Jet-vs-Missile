@@ -33,6 +33,7 @@ import {
   JET_MISSILE_RELOAD,
   STEP,
 } from '../config';
+import { targetDestroyed } from '../core/Analytics';
 import { Pool, type Poolable } from '../core/Pool';
 import type { Drone } from '../threats/Drones';
 import type { Launcher } from '../threats/Launchers';
@@ -382,7 +383,7 @@ export class Weapons {
       if (l.hp === 0) {
         l.missiles = 0;
         this.addFire(l.x, l.z, FIRE_LIFE_DESTROYED, 14);
-        this.hooks.say(`${l.name} DESTROYED BY ${source}`);
+        this.hooks.say(`${l.name} DESTROYED BY ${source}` + targetDestroyed(l.name)); // + Stratos Coins
       } else this.hooks.say(`${l.name} DAMAGED BY ${source}`);
     }
   }

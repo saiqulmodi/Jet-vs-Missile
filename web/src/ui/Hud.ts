@@ -185,6 +185,8 @@ export class Hud {
 
   /** main.py:1704 say(): newest line at the bottom, 3 s each, 5 lines */
   say(text: string): void {
+    // the page's mission layer (public/mission.js) coaches from these lines
+    try { window.dispatchEvent(new CustomEvent('fighter-say', { detail: String(text) })); } catch { /* never break the HUD */ }
     for (let i = 0; i < MSG_LINES - 1; i++) {
       this.msgText[i] = this.msgText[i + 1];
       this.msgLife[i] = this.msgLife[i + 1];
@@ -305,6 +307,7 @@ export class Hud {
     const locked = radar + ir > 0 || rockets > 0;
     const flash = (this.tick >> 3) % 2 === 0;
     this.border.style.display = locked && flash ? 'block' : 'none'; // main.py:2550-2551
+    (window as unknown as { __fighterThreat?: boolean }).__fighterThreat = radar + ir > 0; // mission.js: missile coaching
     if (locked) {
       if (slow) {
         const what: string[] = [];

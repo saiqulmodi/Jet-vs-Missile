@@ -13,6 +13,7 @@ export const PLAYER_EDGE_VS_AI = 1.15;
 export let PLAYER_EDGE = PLAYER_EDGE_VS_AI;
 export function setTwoPlayers(on: boolean): void {
   PLAYER_EDGE = on ? 1 : PLAYER_EDGE_VS_AI;
+  if (typeof window !== 'undefined') (window as unknown as { __fighterTwo?: boolean }).__fighterTwo = on; // mission.js: two players
 }
 export const edgeChance = (p: number): number => Math.min(0.98, p * PLAYER_EDGE);
 export const edgeReload = (frames: number): number => Math.round(frames / PLAYER_EDGE);
