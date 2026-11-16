@@ -134,7 +134,7 @@ export class ThreatSystem {
    * One frame. `jet` null = the jet is down (nothing aims at it). `engage` false = launchers hold fire (menu).
    */
   step(jet: JetState | null, engage: boolean): void {
-    if ((window as unknown as { __fighterHold?: boolean }).__fighterHold) engage = false; // mission.js: first-flight tutorial, no enemies yet
+    if ((globalThis as unknown as { __fighterHold?: boolean }).__fighterHold) engage = false; // mission.js: first-flight tutorial, no enemies yet
     this.frame++;
     this.hitThisFrame = false;
     this.launchedThisFrame = 0;
