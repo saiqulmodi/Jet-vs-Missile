@@ -316,14 +316,16 @@ export class Hud {
         this.warn.set(`${what.join('  +  ')}  -  ${(nd / 1000).toFixed(1)} KM`);
         // advice line (main.py:2552-2559), per seeker
         const cm = ts.cm;
+        // phones see the touch button names, never keyboard keys (Stratos #55)
+        const tq = (document.querySelector('.touch-layer') as HTMLElement | null)?.style.display === 'block';
         let adv: string;
         if (radar + ir === 0) adv = 'UNGUIDED - TURN HARD OUT OF ITS PATH';
-        else if (ir > 0 && cm.flareCd === 0) adv = 'PRESS C (\u25B3)  -  FLARES';
-        else if (radar > 0 && cm.chaffCd === 0) adv = 'PRESS K (D-PAD \u2191)  -  CHAFF   |   X (L1)  -  ECM   |   NOTCH: FLY 90 DEG ACROSS IT AND DIVE';
-        else if (radar > 0 && cm.ecmCd === 0) adv = 'PRESS X (L1)  -  ECM JAMMER   |   NOTCH: FLY 90 DEG ACROSS IT AND DIVE';
+        else if (ir > 0 && cm.flareCd === 0) adv = tq ? 'TAP FLARE' : 'PRESS C (\u25B3)  -  FLARES';
+        else if (radar > 0 && cm.chaffCd === 0) adv = tq ? 'TAP CHAFF   |   ECM   |   NOTCH: FLY 90 DEG ACROSS IT AND DIVE' : 'PRESS K (D-PAD \u2191)  -  CHAFF   |   X (L1)  -  ECM   |   NOTCH: FLY 90 DEG ACROSS IT AND DIVE';
+        else if (radar > 0 && cm.ecmCd === 0) adv = tq ? 'TAP ECM   |   NOTCH: FLY 90 DEG ACROSS IT AND DIVE' : 'PRESS X (L1)  -  ECM JAMMER   |   NOTCH: FLY 90 DEG ACROSS IT AND DIVE';
         else if (radar > 0) adv = 'NOTCH: FLY 90 DEG ACROSS IT AND DIVE, THEN BREAK HARD LATE';
         else adv = `FLARES RELOADING ${(cm.flareCd / 60).toFixed(1)} s - BREAK HARD LATE`;
-        if (samT && weapons.missileCd === 0 && weapons.aamLeft > 0) adv += '   |   Z (\u25A1)  -  SHOOT IT DOWN';
+        if (samT && weapons.missileCd === 0 && weapons.aamLeft > 0) adv += tq ? '   |   AAM  -  SHOOT IT DOWN' : '   |   Z (\u25A1)  -  SHOOT IT DOWN';
         this.advice.set(adv);
       }
       this.warnNode.style.visibility = flash || nd < 3000 ? 'visible' : 'hidden';

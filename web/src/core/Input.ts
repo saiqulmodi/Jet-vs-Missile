@@ -122,6 +122,7 @@ export class Input {
   private stickBase!: HTMLDivElement;
   private stickKnob!: HTMLDivElement;
   private touchLayer!: HTMLDivElement;
+  private playing = false;
 
   constructor(root: HTMLElement) {
     for (const a of ACTIONS) this.queued.set(a, false);
@@ -146,7 +147,8 @@ export class Input {
       for (const p of pads) if (p) this.padConnected = true;
     });
     this.buildTouch(root);
-    if (navigator.maxTouchPoints > 0 || 'ontouchstart' in window) {
+    // a coarse pointer counts too (Stratos #55: touch controls missing in a phone test)
+    if (navigator.maxTouchPoints > 0 || 'ontouchstart' in window || matchMedia('(pointer: coarse)').matches) {
       this.touchMode = true;
       this.showTouch(true);
     }
@@ -273,6 +275,7 @@ export class Input {
   }
 
   setTouchVisible(playing: boolean): void {
+    this.playing = playing;
     this.touchLayer.style.display = this.touchMode && playing ? 'block' : 'none';
   }
 
@@ -359,7 +362,10 @@ export class Input {
     root.appendChild(layer);
     this.touchLayer = layer;
     window.addEventListener('pointerdown', (e) => {
-      if (e.pointerType === 'touch') this.touchMode = true;
+      if (e.pointerType === 'touch') {
+        this.touchMode = true;
+        if (this.playing) this.touchLayer.style.display = 'block'; // a finger brings the touch controls back
+      }
     });
   }
 
