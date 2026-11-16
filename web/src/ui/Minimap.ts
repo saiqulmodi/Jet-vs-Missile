@@ -105,7 +105,14 @@ export class Minimap {
     this.canvas.style.display = on ? 'block' : 'none';
   }
 
-  update(ts: ThreatSystem, sq: Squadron, playerX: number, playerZ: number, playerHeading: number): void {
+  update(
+    ts: ThreatSystem,
+    sq: Squadron,
+    playerX: number,
+    playerZ: number,
+    playerHeading: number,
+    rwy: { x: number; z: number; label: string } | null = null,
+  ): void {
     if (++this.tick % 6 !== 0) return;
     const c = this.ctx;
     c.drawImage(this.bg, 0, 0);
@@ -156,6 +163,34 @@ export class Minimap {
     c.lineTo(px + Math.cos(sweep) * 46, py + Math.sin(sweep) * 46);
     c.stroke();
     c.restore();
+    // the nearest runway (SkyForge fighter: always shown with the distance to cover): green ring + line from the jet
+    if (rwy) {
+      const rx = ox + rwy.x * kx;
+      const ry = oz + rwy.z * kz;
+      c.save();
+      c.strokeStyle = '#3cff6e';
+      c.lineWidth = 1.5;
+      c.shadowColor = '#3cff6e';
+      c.shadowBlur = 5;
+      c.beginPath();
+      c.arc(rx, ry, 11, 0, Math.PI * 2);
+      c.stroke();
+      c.setLineDash([3, 3]);
+      c.lineWidth = 1;
+      c.beginPath();
+      c.moveTo(px, py);
+      c.lineTo(rx, ry);
+      c.stroke();
+      c.setLineDash([]);
+      c.shadowBlur = 0;
+      c.font = 'bold 9px monospace';
+      const tw = c.measureText(rwy.label).width;
+      c.fillStyle = 'rgba(0, 16, 8, 0.75)';
+      c.fillRect(4, H - 15, tw + 6, 12);
+      c.fillStyle = '#3cff6e';
+      c.fillText(rwy.label, 7, H - 6);
+      c.restore();
+    }
     // hostile drones: red chevrons along their heading (main.py:2604 marks them; colour kept hostile red-violet)
     for (const d of ts.drones) if (d.alive) chevron(c, ox + d.x * kx, oz + d.z * kz, d.heading, 3.4, '#ff5a6e');
     // missiles: orange chevrons along their flight (main.py:2606)

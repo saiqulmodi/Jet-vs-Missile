@@ -46,6 +46,8 @@ class Text {
 export class Hud {
   readonly root: HTMLDivElement;
   private spd: Text;
+  private rwyNode: HTMLDivElement;
+  private rwyText: Text;
   private mach: Text;
   private alt: Text;
   private agl: Text;
@@ -128,6 +130,9 @@ export class Hud {
     this.p2Node = el(r, 'mark mark-p2'); // main.py:2572-2583 player 2's pick
     this.p2Node.style.display = 'none';
     this.p2Text = new Text(this.p2Node);
+    this.rwyNode = el(r, 'mark mark-rwy'); // the nearest runway, always marked (SkyForge fighter)
+    this.rwyNode.style.display = 'none';
+    this.rwyText = new Text(this.rwyNode);
     const log = el(r, 'hud-log');
     for (let i = 0; i < MSG_LINES; i++) {
       this.msgNodes.push(new Text(el(log, 'hud-log-line')));
@@ -167,6 +172,15 @@ export class Hud {
 
   setTag(s: string): void {
     this.tag.set(s);
+  }
+
+  /** the nearest runway in the view: marker with its name and distance */
+  rwyMark(at: Vector3 | null, text: string, cam: PerspectiveCamera, w: number, h: number): void {
+    if (!at) {
+      this.rwyNode.style.display = 'none';
+      return;
+    }
+    if (this.place(this.rwyNode, at, cam, w, h)) this.rwyText.set(text);
   }
 
   /** player 2's picked launcher: bracket and its state (main.py:2572-2583) */

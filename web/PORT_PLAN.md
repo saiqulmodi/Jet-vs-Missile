@@ -166,3 +166,34 @@ Status 31-Oct-2026: phases 1-6 built; phase 6 publishing (GitHub Pages / Stratos
    widest at the wing root, taper to the nozzle, flattened section) + dorsal spine instead of cylinder + cone; paint
    metalness 0.22 / 0.25 (was 0.7) so the squadron colours read as paint, not chrome. Sim test PASS.
 8. **Done (01-Nov, user: name/logo "special, appealing, no write-up")** - New emblem (src/ui/Logo.ts emblemSvg, no words): polished-steel fighter climbing out of a sunset over the curve of the earth, twin burners lit, missile on a sweeping smoke trail, flares fanned like wings, red lock-on brackets, bevelled metal rim. Intro animation kept (same classes). App icons rendered from the same vector by tools/make_icons.mjs (headless Chrome: 192 / 512 any, 512 maskable on night sky at 80 %, 180 Apple); favicon = icons/icon-192.png; service-worker cache v3.
+
+## SkyForge fighter features (owner, 09-Nov-2026: "accommodate all fighter features of SkyForge: manoeuvring, ground and sky runways, missile paths, flames"); one phase at a time, wait for "go"
+1. **Done** - Manoeuvres (flight/Maneuvers.ts, ported from SkyForge src/flight/maneuvers.js onto JetPhysics): Shift+1..8 / numpad 1..8 / touch MNV
+   (next one): loop, Immelmann, split-S, break 180, aileron roll, barrel roll, Cuban eight, wingover. Autopilot moves stick + throttle only;
+   loop radius and wingover adapt to the G the thin air allows (the game cruises at 35,000 ft); rolls are unloaded. Ghost path in the sky
+   (fx/GhostPath.ts: line + ring every 250 m, next 3 bright), score 0-100 + stars, stick/rudder = MANUAL (follow the rings).
+   V aerobatics kept. Test: `npm run test:maneuvers` (8 figures at 35,000 ft and 15,000 ft + 2 refusals).
+2. **Done** - Flight-path visuals + flames (fx/FlightPathFx.ts, from SkyForge src/fx/flightPath.js + fighterFx.js): wing-tip ribbons for the
+   last 20 s (cyan normal, amber Mach 0.85-1.2, white above 1.2, red above 5 G), future-path dots 8 s ahead, predicted paths 6 s ahead of
+   every missile in the air (red = enemy, blue = yours; the full flown trails of MissileTrails stay), vapour cone round Mach 1, wing vapour
+   over the wings (AoA > 10 deg, > 4 G, below ~4,500 m). Afterburner flame builds (~0.3 s) and dies (~0.5 s) smoothly in JetModel.setFlame,
+   shock diamonds only in a strong flame. Sonic boom ('boom' in Sfx) once each time the jet goes through Mach 1 (re-armed below 0.97).
+   Existing contrail, tip vapour above 4.5 G and plume shader kept.
+3. **Done** - Ground runways (world/Airfields.ts, flight/ReturnToBase.ts ported from SkyForge src/flight/returnToBase.js, flight/Landing.ts):
+   nearest runway always marked - minimap green ring + dashed line + "RWY n  distance", and a green marker in the 3D view. Shift+9 /
+   numpad 9 / touch RTB: RTB (spirals down first when too high, e.g. from 35,000 ft) > INITIAL > BREAK > DOWNWIND > BASE > FINAL (3 deg,
+   aim 100 m in; the runway is only 1,040 m) > FLARE (firm, from 3 m) > ROLLOUT (brakes, steering); go-around if not stable on short final;
+   stick or 9 again = pilot takes over. JetPhysics: gear (drag; auto down near a runway under 1,000 ft and 250 kt), ground roll
+   (stepGround: friction, brakes at idle, nose-wheel steering, rotate + lift-off when pulling), touchDown. Touchdown rule: on a runway,
+   gear down, sink <= 4 m/s, wings level, nose not down = LANDED (stars); anything else still crashes (CLAUDE.md ground-crash rule).
+   Off the runway while rolling = crash. JetModel: nose + main gear legs folding over 2 s. Test: `npm run test:rtb` (7 landings incl. from
+   the game start at 35,000 ft, all on the centre line within 1 m, stopped 616-724 m in; take-off).
+4. **Done** - Fighter HUD (ui/FighterHud.ts, from SkyForge src/hud/fighterHud.js, weapons symbols left out): horizon, pitch ladder,
+   zenith/nadir, gun cross, flight path marker, steering diamond to the runway (RTB / gear down), ILS needles on final, AoA approach
+   bracket (gear down), heading tape, speed tape (KIAS) + Mach + alpha, altitude tape (R = height above ground below 5,000 ft) + climb,
+   G + MAX, power / AB, bank scale, manoeuvre line + score stars, STALL / LIM OFF; compact on small phones; the game's own HUD boxes kept.
+   Pilot G (flight/PilotG.ts, ported as is) + ui/GVision.ts: grey-out (view to grey), tunnel, blackout, G-LOC 6 s with hands off the stick
+   (autopilots keep flying), red-out under negative G. AoA limiter switch O (JetPhysics.limiterOff): off = full back stick past the stall,
+   a stalled wing drops, a held stall spins; stick forward + opposite rudder recovers; on again at every start. 3D flight-path miniature
+   top left (ui/PathMini.ts): last 3 min coloured like the ribbons, drop lines, ghost dashed, runway during RTB, missiles as red dots;
+   click = full screen 5 s. Test: `npm run test:pilot` (10 checks).

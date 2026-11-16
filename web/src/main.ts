@@ -11,8 +11,20 @@ import { ChaseCamera } from './camera/ChaseCamera';
 import { Showcase } from './camera/Showcase';
 import { LEVEL, pxToX, pyToZ, SAM_DAMAGE, setLevel, setTwoPlayers, START_X_PX, START_Y_PX, STEP } from './config';
 import { flightEnd, flightStart } from './core/Analytics';
-import { type Input as InputT, Input } from './core/Input';
+import { type Input as InputT, Input, MANEUVER_ACTIONS } from './core/Input';
 import { Aerobatics, DISPLAY_SMOKE } from './flight/Aerobatics';
+import { applyThrottle, MANEUVER_COUNT, MANEUVERS, ManeuverPilot, ManeuverScore, predictPath } from './flight/Maneuvers';
+import { GhostPath } from './fx/GhostPath';
+import { FlightPathFx } from './fx/FlightPathFx';
+import { ReturnPilot } from './flight/ReturnToBase';
+import { checkTouchdown } from './flight/Landing';
+import { airDensity } from './flight/JetPhysics';
+import { nearestField, onRunway, pickEnd, runwaySurface } from './world/Airfields';
+import { newPilotG, type PilotVision, stepPilotG } from './flight/PilotG';
+import { FighterHud } from './ui/FighterHud';
+import { GVision } from './ui/GVision';
+import { PathMini } from './ui/PathMini';
+import { APPROACH_AOA_DEG, GEAR_H } from './flight/JetPhysics';
 import { Squadron } from './flight/Squadron';
 import { JetPhysics } from './flight/JetPhysics';
 import { Contrail } from './fx/Contrail';
@@ -92,6 +104,105 @@ const squadron = new Squadron(scene);
 const playerModel = () => squadron.jets[squadron.active].model;
 let playerVisible = true;
 const aero = new Aerobatics();
+/** the 8 fighter manoeuvres (SkyForge's fighter): autopilot, ghost path in the sky, score */
+const mnv = new ManeuverPilot();
+const mnvScore = new ManeuverScore();
+const ghost = new GhostPath(scene);
+/** wing-tip ribbons, future-path dots, missile paths, vapour cone, wing vapour (SkyForge fighter) */
+const pathFx = new FlightPathFx(scene);
+/** return to base: overhead break and landing on the nearest runway (SkyForge fighter) */
+const rtb = new ReturnPilot();
+const _rwy = new Vector3();
+/** indicated airspeed, kt */
+const iasKt = (): number => (jet.speed * Math.sqrt(airDensity(jet.pos.y) / 1.225)) / 0.514444;
+/** gear when the pilot flies: down on the ground and near a runway when low (under 1,000 ft) and slow (under 250 kt) */
+function autoGear(): boolean {
+  if (jet.onGround) return true;
+  const n = nearestField(jet.pos.x, jet.pos.z);
+  return n.dist < 4000 && jet.pos.y - runwaySurface(n.field.x, n.field.z) < 305 && iasKt() < 250;
+}
+function toggleRtb(): void {
+  if (rtb.active) {
+    rtb.stop();
+    hud.say('RTB OFF - YOU HAVE CONTROL');
+    return;
+  }
+  if (jet.onGround) {
+    hud.say('ON THE RUNWAY - FULL POWER AND PULL TO TAKE OFF');
+    return;
+  }
+  stopManeuver();
+  aero.stop();
+  const { field } = nearestField(jet.pos.x, jet.pos.z);
+  const end = pickEnd(field, jet.pos.x, jet.pos.z, jet.vel.x, jet.vel.z);
+  rtb.start(end, jet, heightAt);
+  hud.say(`RTB - BASE ${field.id} RUNWAY ${end.ident}`);
+  SFX.play('switch');
+}
+let boomArmed = true; // the sonic boom sounds once each time the jet goes through Mach 1
+let mnvNext = 1; // touch MNV flies the figures in turn
+function stopManeuver(): void {
+  ghostPts = null;
+  mnv.stop();
+  mnvScore.stop();
+  ghost.set(null);
+}
+/** start figure n (1..8); refused with the reason (speed, height) */
+function startManeuver(n: number): void {
+  if (jet.onGround) {
+    hud.say(`${MANEUVERS[n].name} - ON THE GROUND`);
+    return;
+  }
+  if (rtb.active) rtb.stop();
+  const agl = jet.pos.y - heightAt(jet.pos.x, jet.pos.z);
+  // break turns go the way the jet is already banked (right when level)
+  const rightWingY = _side.crossVectors(jet.vel, jet.liftUp).normalize().y; // < 0 = right wing down
+  const turnDir = rightWingY > 0.02 ? -1 : 1;
+  const env = { aglM: agl, turnDir };
+  const path = predictPath(n, jet, env);
+  const why = mnv.start(n, jet, env);
+  if (why) {
+    hud.say(`${MANEUVERS[n].name} - ${why}`);
+    return;
+  }
+  aero.stop();
+  ghost.set(path ? path.points : null);
+  ghostPts = path ? path.points : null;
+  mnvScore.start(path);
+  hud.say(`${n} ${MANEUVERS[n].name}`);
+  SFX.play('switch');
+}
+function showScore(r: { name: string; score: number; stars: number } | null): void {
+  if (!r) return;
+  hud.say(`${r.name}  ${r.score}  ${'*'.repeat(r.stars)}`);
+  ghost.set(null);
+  ghostPts = null;
+  lastScore = { text: `${r.name}  ${r.score}`, stars: r.stars, until: performance.now() + 5000 };
+}
+/** fighter HUD, pilot G, 3D flight-path miniature (SkyForge fighter) */
+let ghostPts: Vector3[] | null = null;
+let lastScore: { text: string; stars: number; until: number } | null = null;
+const pilotG = newPilotG();
+let vision: PilotVision | null = null;
+let maxG = 1;
+let wasGloc = false;
+const fhud = new FighterHud(document.body);
+const gvis = new GVision(document.body, renderer.domElement);
+const mini = new PathMini(document.body);
+/** a pilot blacked out under G has no hands on the stick */
+const handsOff = { pitch: 0, roll: 0, yaw: 0, throttle: 0, afterburner: false };
+function resetPilot(): void {
+  Object.assign(pilotG, newPilotG());
+  vision = null;
+  maxG = 1;
+  wasGloc = false;
+  gvis.set(null);
+}
+function showFighterUi(on: boolean): void {
+  fhud.show(on);
+  mini.show(on);
+  if (!on) gvis.set(null);
+}
 const p2 = new PlayerTwo();
 const contrail = new Contrail();
 scene.add(contrail.mesh);
@@ -240,9 +351,13 @@ function resetWorld(): void {
   trails.clear();
   blasts.clear();
   contrail.clear();
+  pathFx.clear();
+  mini.clear();
   weapons.reset();
   squadron.reset(START_X, START_Z);
   aero.stop();
+  stopManeuver();
+  rtb.stop();
   p2.sel = null;
   hud.clearLog();
   wreckVisible = true;
@@ -260,6 +375,8 @@ function startFlight(): void {
   downScreen.style.display = 'none';
   hud.show(true);
   minimap.show(true);
+  showFighterUi(true);
+  resetPilot();
   input.setTouchVisible(true);
   flightStart(LEVEL); // analytics: a game begins
 }
@@ -271,6 +388,8 @@ function jetDown(reason: string, onGround: boolean, cause: string): void {
   squadron.downActive(); // main.py:2319 its replacement rejoins later
   flightEnd(); // analytics: that game is over
   aero.stop();
+  stopManeuver();
+  rtb.stop();
   camAngle = Math.atan2(jet.vel.z, jet.vel.x) + Math.PI * 0.75;
   camLook.copy(jet.pos);
   if (onGround) {
@@ -295,6 +414,8 @@ function jetDown(reason: string, onGround: boolean, cause: string): void {
   downScreen.style.display = 'block';
   hud.show(false);
   minimap.show(false);
+  showFighterUi(false);
+  resetPilot();
   input.setTouchVisible(false);
 }
 
@@ -324,6 +445,9 @@ function takeControl(): void {
   downScreen.style.display = 'none';
   hud.show(true);
   minimap.show(true);
+  showFighterUi(true);
+  resetPilot();
+  mini.clear();
   hud.say(`${squadron.callsign} - YOU HAVE CONTROL`);
   flightStart(LEVEL); // analytics: the next flight is the next game
   input.setTouchVisible(true);
@@ -333,6 +457,11 @@ function takeControl(): void {
 /** TAB / R3 / minimap click: hand this jet to its flight and take over another (main.py:1936-1938, 2045, 2058) */
 function switchJet(idx: number): void {
   if (idx === squadron.active || !squadron.jets[idx].alive) return;
+  if (jet.onGround) {
+    hud.say('ON THE RUNWAY - TAKE OFF FIRST');
+    return;
+  }
+  playerModel().setGear(false, 99); // the jet handed to its flight flies on with its gear up
   squadron.switchTo(idx, jet.pos, (jet.headingDeg * Math.PI) / 180);
   const j = squadron.jets[idx];
   jet.reset(j.pos.x, j.pos.z, j.heading);
@@ -341,6 +470,8 @@ function switchJet(idx: number): void {
   prevQuat.copy(jet.quat);
   contrail.clear();
   aero.stop();
+  stopManeuver();
+  rtb.stop();
   weapons.rearm();
   terrain.snapTo(jet.pos.x, jet.pos.z);
   camera.snap(jet.pos, jet.quat);
@@ -372,6 +503,16 @@ function fixedStep(): void {
   const wantsAgm = input.consume('agm');
   const wantsAam = input.consume('aam');
   const wantsAero = input.consume('aero');
+  let wantsMnv = 0;
+  MANEUVER_ACTIONS.forEach((a, i) => {
+    if (input.consume(a)) wantsMnv = i + 1;
+  });
+  const wantsRtb = input.consume('rtb');
+  const wantsLimiter = input.consume('limiter');
+  if (input.consume('mnvNext')) {
+    wantsMnv = mnvNext;
+    mnvNext = (mnvNext % MANEUVER_COUNT) + 1;
+  }
   const wantsSam = input.consume('sam');
   const wantsNext = input.consume('nextJet');
   const wantsPrev = input.consume('prevJet');
@@ -436,7 +577,46 @@ function fixedStep(): void {
       else {
         // a running aerobatic figure flies itself (main.py:2102-2131)
         const auto = flying && aero.active && aero.control(jet);
-        jet.step(STEP, flying ? (auto ? (aero.stick as unknown as InputT) : input) : null);
+        // the pilot's G tolerance: grey-out, tunnel, blackout, G-LOC (hands off the stick), red-out
+        vision = flying ? stepPilotG(pilotG, jet.onGround ? 1 : jet.gLoad, STEP) : null;
+        if (flying && !jet.onGround) maxG = Math.max(maxG, jet.gLoad);
+        const lost = !!vision && vision.controlsLost;
+        if (vision && vision.gloc && !wasGloc) hud.say('G-LOC - THE PILOT HAS BLACKED OUT');
+        wasGloc = !!vision && vision.gloc;
+        const pilotIn = lost ? (Object.assign(handsOff, { afterburner: jet.afterburner }) as unknown as InputT) : input;
+        // a fighter manoeuvre flies itself until the pilot moves the stick or rudder (then the ghost stays to follow)
+        if (flying && !lost && mnv.flying && (Math.abs(input.pitch) > 0.15 || Math.abs(input.roll) > 0.15 || Math.abs(input.yaw) > 0.3)) {
+          mnv.handOver();
+          hud.say('MANUAL - FOLLOW THE RINGS');
+        }
+        // return to base flies itself until the pilot moves the stick
+        if (flying && !lost && rtb.active && (Math.abs(input.pitch) > 0.15 || Math.abs(input.roll) > 0.15 || Math.abs(input.yaw) > 0.3)) {
+          rtb.stop();
+          hud.say('RTB OFF - YOU HAVE CONTROL');
+        }
+        const rc = flying && rtb.active ? rtb.update(jet, STEP) : null;
+        if (rtb.finished) {
+          rtb.finished = false;
+          hud.say('STOPPED ON THE RUNWAY - FULL POWER AND PULL TO TAKE OFF');
+        }
+        const mc = !rc && flying && mnv.flying ? mnv.update(jet, STEP) : null;
+        if (mc) applyThrottle(jet, mc);
+        jet.gearDown = rtb.active ? rtb.gearDown : autoGear();
+        jet.brakes = rtb.active ? rtb.brakes : jet.onGround && jet.throttle < 0.05 && !pilotIn.afterburner;
+        const ctl = flying ? ((rc ?? mc ?? (auto ? aero.stick : pilotIn)) as unknown as InputT) : null;
+        if (jet.onGround) {
+          if (jet.stepGround(STEP, ctl, runwaySurface(jet.pos.x, jet.pos.z))) hud.say('AIRBORNE');
+          else if (flying && !onRunway(jet.pos.x, jet.pos.z, 0)) jetDown('RAN OFF THE RUNWAY', true, 'slow down on the runway: power to idle brakes the wheels');
+        } else jet.step(STEP, ctl);
+        if (flying && mnvScore.on) {
+          const r = mnvScore.update(jet.pos, jet.vel, STEP);
+          if (r) showScore(r);
+          else if (mnv.finished && !mnv.active) showScore(mnvScore.finish(jet.pos, jet.vel));
+        }
+        if (mnv.finished && !mnvScore.on && !mnv.active) {
+          mnv.finished = false;
+          ghost.set(null);
+        }
         if (auto && frameNo % 2 === 0) {
           // display smoke: three coloured trails across the wings (main.py:2127-2129)
           _side.crossVectors(jet.nose, jet.bodyUp).normalize();
@@ -449,7 +629,18 @@ function fixedStep(): void {
         }
       }
       const ground = heightAt(jet.pos.x, jet.pos.z);
-      if (jet.pos.y <= ground + 1.5) {
+      // a runway touchdown: gear down, gentle, wings level = landed; anything else is a crash
+      const td = flying && !jet.onGround && !jet.crashing ? checkTouchdown(jet) : null;
+      if (td && td.ok) {
+        jet.touchDown(runwaySurface(jet.pos.x, jet.pos.z));
+        stopManeuver();
+        aero.stop();
+        hud.say(`LANDED  ${td.sink.toFixed(1)} m/s  ${td.off.toFixed(0)} m off centre  ${'*'.repeat(td.stars)}`);
+        input.rumble(0.4, 0.3, 200);
+      } else if (td && state === 'flying') {
+        jet.pos.y = ground + 1.5;
+        jetDown('CRASH LANDING', true, td.why);
+      } else if (!jet.onGround && jet.pos.y <= ground + 1.5) {
         jet.pos.y = ground + 1.5;
         if (flying) jetDown('CRASHED INTO THE GROUND', true, 'watch the height above ground - the PULL UP warning comes at 3,000 ft');
         else {
@@ -482,7 +673,15 @@ function fixedStep(): void {
         } else hud.say(`CHAFF RELOADING ${(cm.chaffCd / 60).toFixed(1)} s`);
       }
       // aerobatics V (main.py:1950-1954), manual SAM M (main.py:1994-2000), jet switch TAB (main.py:1936-1938)
+      if (wantsMnv) startManeuver(wantsMnv);
+      if (wantsRtb) toggleRtb();
+      if (wantsLimiter) {
+        jet.limiterOff = !jet.limiterOff;
+        hud.say(jet.limiterOff ? 'AoA LIMITER OFF - the wing can stall and spin' : 'AoA LIMITER ON');
+        SFX.play('switch');
+      }
       if (wantsAero && !aero.active) {
+        stopManeuver();
         hud.say(aero.start(jet));
         SFX.play('switch');
       }
@@ -599,7 +798,13 @@ function frame(now: number): void {
   // flying in from far away, the new jet stays visible: it keeps a minimum size on screen
   pm.group.scale.setScalar(state === 'arriving' ? Math.max(1, drawPos.distanceTo(camera.camera.position) / 350) : 1);
   pm.setFlame(jet.throttle, jet.afterburner, simTime);
+  pm.setGear(jet.gearDown && state !== 'start', dt);
   const flyingNow = state === 'flying';
+  if (flyingNow && boomArmed && jet.mach >= 1) {
+    boomArmed = false;
+    SFX.play('boom');
+    input.rumble(0.6, 0.3, 300);
+  } else if (jet.mach < 0.97) boomArmed = true;
   pm.setControls(flyingNow ? input.roll : 0, flyingNow ? input.pitch : 0, flyingNow ? input.yaw : 0, dt);
   // wingtip vapour: condensation off the tips while pulling hard
   if (flyingNow && jet.gLoad > VAPOUR_G && pm.group.visible) {
@@ -629,12 +834,29 @@ function frame(now: number): void {
   contrail.update(cp, drawPos, frameNo, nightMix);
   trails.update(cp, frameNo, nightMix);
   for (const v of vapour) v.update(cp, frameNo, nightMix ? 0.35 : 1);
+  pathFx.attach(pm.group);
+  pathFx.update(
+    dt,
+    { pos: drawPos, vel: jet.vel, quat: drawQuat, gLoad: jet.gLoad, mach: jet.mach, alpha: jet.alpha },
+    flyingNow && pm.group.visible,
+    cp,
+    isNight(),
+    state === 'start' ? [] : threats.missiles.items,
+    state === 'start' ? [] : weapons.items.items,
+  );
   terrain.follow(state === 'start' ? cp.x : drawPos.x, state === 'start' ? cp.z : drawPos.z);
   if (state === 'flying') {
     hud.update(jet, heightAt(jet.pos.x, jet.pos.z), camera.camera, threats, weapons, window.innerWidth, window.innerHeight);
-    hud.setTag(`${squadron.callsign}   LEVEL ${LEVEL}${p2.on ? '   2 PLAYERS' : ''}${aero.active ? '   ' + aero.kind : ''}`);
+    hud.setTag(`${squadron.callsign}   LEVEL ${LEVEL}${p2.on ? '   2 PLAYERS' : ''}${aero.active ? '   ' + aero.kind : ''}${mnv.active ? '   ' + mnv.def!.name + (mnv.flying ? '' : ' (MANUAL)') : ''}${rtb.active ? `   RTB: ${rtb.phase} ${rtb.end.ident}${rtb.goArounds ? ' (GO AROUND)' : ''}` : ''}${jet.gearDown ? '   GEAR DOWN' : ''}`);
+    ghost.update(mnvScore.i, isNight());
     hud.p2Mark(p2.on ? p2.sel : null, p2.on ? p2.status(jet.pos) : '', camera.camera, window.innerWidth, window.innerHeight);
-    minimap.update(threats, squadron, jet.pos.x, jet.pos.z, (jet.headingDeg * Math.PI) / 180);
+    const nf = nearestField(jet.pos.x, jet.pos.z);
+    const rwyF = rtb.active ? rtb.end.field : nf.field;
+    const rwyD = Math.hypot(rwyF.x - jet.pos.x, rwyF.z - jet.pos.z);
+    const rwyLabel = `RWY ${rwyF.id}  ${rwyD < 1000 ? `${rwyD.toFixed(0)} m` : `${(rwyD / 1000).toFixed(1)} km`}`;
+    minimap.update(threats, squadron, jet.pos.x, jet.pos.z, (jet.headingDeg * Math.PI) / 180, { x: rwyF.x, z: rwyF.z, label: rwyLabel });
+    drawFighterUi(dt, rwyF);
+    hud.rwyMark(jet.onGround ? null : _rwy.set(rwyF.x, runwaySurface(rwyF.x, rwyF.z) + 5, rwyF.z), rwyLabel, camera.camera, window.innerWidth, window.innerHeight);
   }
   rwr.update(state === 'flying' ? threats.painting : 0, state === 'flying' ? Hud.lockCount(threats) : 0, launchesSinceFrame, state === 'flying');
   launchesSinceFrame = 0;
@@ -652,6 +874,73 @@ function frame(now: number): void {
     fpsFrames = 0;
     fpsTime = 0;
   }
+}
+
+const _fwd = new Vector3();
+const _rt = new Vector3();
+const COMPACT_HUD = navigator.maxTouchPoints > 0 && Math.min(window.innerWidth, window.innerHeight) < 600;
+/** fighter HUD, G vision and the flight-path miniature, once per display frame while flying */
+function drawFighterUi(dt: number, rwyF: { x: number; z: number }): void {
+  const agl = jet.onGround ? 0 : jet.pos.y - GEAR_H - Math.max(heightAt(jet.pos.x, jet.pos.z), runwaySurface(jet.pos.x, jet.pos.z) - 1);
+  const aglFt = Math.max(0, agl) / 0.3048;
+  _fwd.copy(jet.vel).normalize();
+  _rt.crossVectors(_fwd, jet.liftUp).normalize();
+  const bankDeg = (Math.atan2(-_rt.y, jet.liftUp.y) * 180) / Math.PI;
+  const now = performance.now();
+  let ils: { loc: number; gs: number } | null = null;
+  if (rtb.active && (rtb.phase === 'FINAL' || rtb.phase === 'FLARE')) {
+    const r = rtb.rel(jet.pos.x, jet.pos.z);
+    const target = rtb.end.y + GEAR_H + Math.max(0, 100 - r.along) * Math.tan((3 * Math.PI) / 180);
+    ils = { loc: Math.max(-1, Math.min(1, -r.cross / 100)), gs: Math.max(-1, Math.min(1, (target - jet.pos.y) / 30)) };
+  }
+  let navTurn: number | null = null;
+  if (rtb.active || jet.gearDown) {
+    const brg = (Math.atan2(rwyF.x - jet.pos.x, -(rwyF.z - jet.pos.z)) * 180) / Math.PI;
+    navTurn = ((brg - jet.headingDeg + 540) % 360) - 180;
+  }
+  const mnvLine = mnv.active ? { text: `${mnv.def!.name}${mnv.flying ? '' : '  MANUAL'}`, stars: 0 } : lastScore && now < lastScore.until ? lastScore : null;
+  fhud.draw(
+    {
+      q: drawQuat,
+      vel: jet.vel,
+      yaw: Math.atan2(-jet.nose.x, -jet.nose.z),
+      bankDeg,
+      headingDeg: jet.headingDeg,
+      iasKt: iasKt(),
+      mach: jet.mach,
+      altFt: aglFt < 5000 ? aglFt : jet.pos.y / 0.3048,
+      radarAlt: aglFt < 5000,
+      vsiFpm: jet.vel.y * 196.85,
+      gLoad: jet.gLoad,
+      maxG,
+      aoaDeg: (jet.alpha * 180) / Math.PI,
+      power: jet.throttle * 100,
+      isAfterburner: jet.afterburner,
+      limiterOff: jet.limiterOff,
+      stalled: jet.stalled,
+      onGround: jet.onGround,
+      navTurn,
+      nowMs: now,
+      mnv: mnvLine,
+      aoaBracket: jet.gearDown && !jet.onGround ? APPROACH_AOA_DEG : null,
+      ils,
+      dim: isNight(),
+    },
+    camera.camera,
+    COMPACT_HUD,
+  );
+  gvis.set(vision);
+  mini.record(dt, jet.pos, jet.mach, jet.gLoad, !jet.onGround);
+  const live: Vector3[] = [];
+  for (const m of threats.missiles.items) if (m.active) live.push(m.pos);
+  mini.draw(now, dt, {
+    pos: jet.pos,
+    vel: jet.vel,
+    groundY: heightAt(jet.pos.x, jet.pos.z),
+    ghost: ghostPts,
+    runway: rtb.active ? rtb.end : null,
+    missiles: live,
+  });
 }
 
 const _off = new Vector3();

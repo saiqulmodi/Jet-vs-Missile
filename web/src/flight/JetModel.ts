@@ -214,6 +214,13 @@ export class JetModel {
   private rudder: Group;
   private stabs: Group[] = [];
   private ctl = { roll: 0, pitch: 0, yaw: 0 };
+  private gear = new Group();
+  private gearLegs: Group[] = [];
+  /** 0 = up, 1 = down */
+  private gearPos = 0;
+  /** 0..1: the afterburner flame builds and dies over a moment (SkyForge fighter) instead of snapping */
+  private ab = 0;
+  private lastT = 0;
   /** wingtip positions (local), for vapour trails */
   static readonly WINGTIPS: [V3, V3] = [[-5.2, 0, 3.4], [5.2, 0, 3.4]];
 
@@ -343,6 +350,26 @@ export class JetModel {
     };
     this.nav.push(lamp(0xff3228, -5.2, 0.1, 3.4), lamp(0x28ff5a, 5.2, 0.1, 3.4));
     this.strobe = lamp(0xffffff, 0, 4.3, 5.8);
+
+    // landing gear (SkyForge fighter): nose leg + two main legs with wheels; folds up into the body when raised.
+    // Wheels touch at y = -GEAR_H (2.3 m below the centre).
+    const gearMat = new MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.7, metalness: 0.3 });
+    const strutMat = new MeshStandardMaterial({ color: 0xb8bcc0, roughness: 0.4, metalness: 0.8 });
+    const leg = (x: number, z: number, len: number, r: number): Group => {
+      const g = new Group();
+      g.position.set(x, -0.75, z);
+      const strut = new Mesh(new CylinderGeometry(0.09, 0.11, len, 8), strutMat);
+      strut.position.y = -len / 2;
+      const wheel = new Mesh(new CylinderGeometry(r, r, 0.28, 16), gearMat);
+      wheel.rotation.z = Math.PI / 2;
+      wheel.position.y = -len;
+      g.add(strut, wheel);
+      this.gear.add(g);
+      return g;
+    };
+    this.gearLegs.push(leg(0, -5.6, 1.25, 0.3), leg(-1.4, 1.2, 1.2, 0.35), leg(1.4, 1.2, 1.2, 0.35));
+    this.gear.visible = false;
+    this.group.add(this.gear);
   }
 
   /** a control surface: quad from hinge line (h0 -> h1) to its trailing edge (e0, e1), turning about the hinge */
@@ -375,6 +402,14 @@ export class JetModel {
     for (const s of this.stabs) s.rotation.x = -p * 14 * D;
   }
 
+  /** landing gear: down or up, moving over about 2 s */
+  setGear(down: boolean, dt: number): void {
+    this.gearPos += Math.max(-dt / 2, Math.min(dt / 2, (down ? 1 : 0) - this.gearPos));
+    this.gear.visible = this.gearPos > 0.02;
+    // each leg swings forward up into the body (about its top)
+    for (const g of this.gearLegs) g.rotation.x = (1 - this.gearPos) * (Math.PI / 2);
+  }
+
   setNight(night: boolean, frame: number): void {
     for (const n of this.nav) n.visible = night;
     this.strobe.visible = night && frame % 60 < 5; // main.py:2527
@@ -382,19 +417,26 @@ export class JetModel {
 
   /** 0 = engine idle glow, 1 = full afterburner plume */
   setFlame(throttle: number, afterburner: boolean, t: number): void {
-    const len = afterburner ? 1.6 + 0.08 * Math.sin(t * 40) : 0.25 + 0.35 * throttle;
-    const heat = afterburner ? 1 : 0.15 + 0.35 * throttle;
-    this.flame.scale.set(afterburner ? 1.05 : 0.85, afterburner ? 1.05 : 0.85, len);
+    const dt = Math.min(0.1, Math.max(0, t - this.lastT));
+    this.lastT = t;
+    // lights in about 0.3 s, dies in about 0.5 s
+    this.ab += ((afterburner ? 1 : 0) - this.ab) * Math.min(1, dt * (afterburner ? 7 : 4));
+    const b = this.ab;
+    const mix = (dry: number, wet: number): number => dry + (wet - dry) * b;
+    const len = mix(0.25 + 0.35 * throttle, 1.6 + 0.08 * Math.sin(t * 40));
+    const heat = mix(0.15 + 0.35 * throttle, 1);
+    const wide = mix(0.85, 1.05);
+    this.flame.scale.set(wide, wide, len);
     const ou = this.outerMat.uniforms;
     const cu = this.coreMat.uniforms;
     ou.uTime.value = cu.uTime.value = t;
     ou.uHeat.value = cu.uHeat.value = heat;
-    ou.uGain.value = afterburner ? 1.4 : 0.5 + 0.9 * throttle;
-    cu.uGain.value = afterburner ? 2.8 : 1.2 + 1.6 * throttle;
+    ou.uGain.value = mix(0.5 + 0.9 * throttle, 1.4);
+    cu.uGain.value = mix(1.2 + 1.6 * throttle, 2.8);
     ou.uDiamonds.value = 0;
-    cu.uDiamonds.value = afterburner ? 1 : 0;
+    cu.uDiamonds.value = b * b; // shock diamonds only in a strong afterburner flame
     // turbine face and nozzle lip glow with the heat (HDR: blooms)
-    this.nozzleGlow.color.setHex(afterburner ? 0xffb070 : 0xff7a36).multiplyScalar(afterburner ? 4 : 1 + 1.5 * throttle);
-    this.nozzleRing.emissiveIntensity = afterburner ? 1.6 : 0.2 + 0.5 * throttle;
+    this.nozzleGlow.color.setHex(b > 0.5 ? 0xffb070 : 0xff7a36).multiplyScalar(mix(1 + 1.5 * throttle, 4));
+    this.nozzleRing.emissiveIntensity = mix(0.2 + 0.5 * throttle, 1.6);
   }
 }

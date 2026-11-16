@@ -26,11 +26,26 @@ export type Action =
   | 'p2Left'
   | 'p2Right'
   | 'p2Guided'
-  | 'p2Unguided';
+  | 'p2Unguided'
+  | 'mnv1'
+  | 'mnv2'
+  | 'mnv3'
+  | 'mnv4'
+  | 'mnv5'
+  | 'mnv6'
+  | 'mnv7'
+  | 'mnv8'
+  | 'mnvNext'
+  | 'rtb'
+  | 'limiter';
+
+/** the 8 fighter manoeuvres (flight/Maneuvers.ts): Shift + 1..8 or numpad 1..8; MNV on touch flies the next one */
+export const MANEUVER_ACTIONS: Action[] = ['mnv1', 'mnv2', 'mnv3', 'mnv4', 'mnv5', 'mnv6', 'mnv7', 'mnv8'];
 
 const ACTIONS: Action[] = [
   'start', 'flare', 'ecm', 'night', 'chaff', 'bomb', 'agm', 'aam', 'aero', 'sam', 'nextJet', 'prevJet',
   'levelUp', 'levelDown', 'twoPlayers', 'p2Left', 'p2Right', 'p2Guided', 'p2Unguided',
+  'mnv1', 'mnv2', 'mnv3', 'mnv4', 'mnv5', 'mnv6', 'mnv7', 'mnv8', 'mnvNext', 'rtb', 'limiter',
 ];
 
 /** keyboard: one-press actions (main.py's keys where they are free here) */
@@ -49,6 +64,7 @@ const KEY_ACTIONS: Record<string, Action> = {
   KeyN: 'levelUp', // main.py:2026
   KeyP: 'levelDown', // main.py:2028
   Digit2: 'twoPlayers', // main.py:2003
+  KeyO: 'limiter', // AoA limiter off / on (SkyForge fighter)
 };
 /** player 2 on the arrow keys, only in 2-player mode (main.py:2007-2025) */
 const P2_KEYS: Record<string, Action> = { ArrowLeft: 'p2Left', ArrowRight: 'p2Right', ArrowUp: 'p2Guided', ArrowDown: 'p2Unguided' };
@@ -130,7 +146,13 @@ export class Input {
       if (PREVENT.has(e.code)) e.preventDefault();
       if (!e.repeat) {
         if (e.code === 'Tab') this.queue(e.shiftKey ? 'prevJet' : 'nextJet'); // main.py:1936
-        const a = KEY_ACTIONS[e.code];
+        // manoeuvres: Shift + 1..8 (plain 2 stays the 2-player switch) or numpad 1..8
+        const mn = /^(?:Digit|Numpad)([1-8])$/.exec(e.code);
+        const isMnv = !!mn && (e.shiftKey || e.code.startsWith('Numpad'));
+        if (isMnv) this.queue(MANEUVER_ACTIONS[Number(mn![1]) - 1]);
+        // return to base: Shift + 9 or numpad 9
+        if (e.code === 'Numpad9' || (e.code === 'Digit9' && e.shiftKey)) this.queue('rtb');
+        const a = isMnv ? undefined : KEY_ACTIONS[e.code];
         if (a) this.queue(a);
         if (this.twoPlayers && P2_KEYS[e.code]) this.queue(P2_KEYS[e.code]);
       }
@@ -354,6 +376,8 @@ export class Input {
     tap('AAM', 'aam', 'aam');
     tap('NIGHT', 'night', 'night');
     tap('AERO', 'aero', 'aero'); // main.py:158
+    tap('MNV', 'mnv', 'mnvNext'); // the next of the 8 fighter manoeuvres
+    tap('RTB', 'rtb', 'rtb'); // return to base and land
     tap('SAM', 'sam', 'sam'); // main.py:157
     tap('JET', 'jet', 'nextJet');
     tap('LV+', 'lvup', 'levelUp');

@@ -36,7 +36,7 @@ function rumble(ctx: AudioContext, dur: number, vol = 0.45): AudioBuffer {
   return buf;
 }
 
-export type SoundName = 'shoot' | 'explode' | 'ignite' | 'switch' | 'missile' | 'flare';
+export type SoundName = 'shoot' | 'explode' | 'ignite' | 'switch' | 'missile' | 'flare' | 'boom';
 
 class SfxEngine {
   private ctx: AudioContext | null = null;
@@ -53,6 +53,7 @@ class SfxEngine {
       this.bufs.set('switch', tone(ctx, 600, 980, 0.1)); // main.py:323 jet switch, aerobatics
       this.bufs.set('missile', tone(ctx, 1200, 500, 0.18, 0.25)); // main.py:324 AGM / AAM
       this.bufs.set('flare', tone(ctx, 2200, 1400, 0.12, 0.2)); // main.py:325
+      this.bufs.set('boom', rumble(ctx, 0.9, 0.8)); // sonic boom as the jet goes through Mach 1 (SkyForge fighter)
     });
   }
 
