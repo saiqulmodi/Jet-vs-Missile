@@ -15,7 +15,7 @@ export function emblemSvg(animated: boolean): string {
   const missilePos = animated ? '' : ' transform="translate(236 280) rotate(-60) scale(1.5)"';
   const cls = (c: string): string => (animated ? ` class="${c}"` : '');
   return /* svg */ `
-<svg${animated ? ' class="logo"' : ''} viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Jet vs Missile">
+<svg${animated ? ' class="logo"' : ''} viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Fighter">
   <defs>
     <radialGradient id="lg-sky" cx="56%" cy="74%" r="78%">
       <stop offset="0%" stop-color="#fff3c2"/>

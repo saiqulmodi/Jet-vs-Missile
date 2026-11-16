@@ -1,4 +1,6 @@
-# Jet vs Missile
+# Fighter
+
+(Named "Jet vs Missile" until 17-Nov-2026; the repo keeps its old name so links keep working.)
 
 A sky-and-ground arcade shooter built with Python and [pygame-ce](https://pyga.me/).
 

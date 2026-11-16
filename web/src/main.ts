@@ -1,4 +1,4 @@
-// Jet vs Missile - web 3D. Game loop: fixed 60 Hz physics step + one render per display frame.
+// Fighter - web 3D. Game loop: fixed 60 Hz physics step + one render per display frame.
 import './style.css';
 import { ACESFilmicToneMapping, Color, DirectionalLight, HemisphereLight, Quaternion, Scene, SRGBColorSpace, Vector2, Vector3, WebGLRenderer } from 'three';
 import { JetModel } from './flight/JetModel';

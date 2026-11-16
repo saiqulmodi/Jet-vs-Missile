@@ -1,10 +1,11 @@
-# Jet vs Missile
+# Fighter (was "Jet vs Missile")
 
 Python 3.12 + pygame-ce 2.5.8 arcade shooter, everything in `main.py`. Started 2026-10-02.
 
 ## Rules from the user (keep them)
 
-- **One game, one name: "Jet vs Missile".** No other game or character names anywhere (text, drawings,
+- **One game, one name: "Fighter"** (user, 17-Nov-2026: renamed from "Jet vs Missile" everywhere it shows; the repo,
+  folder and Pages link keep the old name so links keep working). No other game or character names anywhere (text, drawings,
   code names, docs). The user's older game lives in its own separate repo and folder; never edit it from here.
 - **Do only what is asked.** Don't add extras (banners, effects, renames) on your own; propose them first.
   Never remove an existing feature without asking.
