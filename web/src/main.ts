@@ -318,6 +318,11 @@ const downTitle = document.getElementById('down-title') as HTMLDivElement;
 const downHint = document.getElementById('down-hint') as HTMLDivElement;
 const fpsNode = document.getElementById('fps') as HTMLDivElement;
 const intro = new Intro(() => input.queueStart());
+// mission.js (Stratos Resume): reads the level for the save and sets it again before a resumed take-off
+(window as unknown as { __fighterLevel?: { get: () => number; set: (n: number) => void } }).__fighterLevel = {
+  get: () => LEVEL,
+  set: (n: number) => setLevel(n),
+};
 const minimap = new Minimap(document.body, maps.day.image as CanvasImageSource, (idx) => {
   if (state === 'flying') switchJet(idx);
 }, squadron);
